@@ -348,6 +348,63 @@ def tree_sha(repo: str, rev: str, folder: str) -> str:
     return proc.stdout.strip()
 
 
+def prune_checkouts(max_age: int = 3600) -> None:
+    """清理被中断的检出目录（checkout-*），避免缓存无限增长。"""
+    try:
+        for entry in os.listdir(REPO_CACHE):
+            if not entry.startswith("checkout-"):
+                continue
+            path = os.path.join(REPO_CACHE, entry)
+            try:
+                if time.time() - os.path.getmtime(path) > max_age:
+                    shutil.rmtree(path, ignore_errors=True)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def git_blob_sha(data: bytes) -> str:
+    h = hashlib.sha1()
+    h.update(b"blob %d\0" % len(data))
+    h.update(data)
+    return h.hexdigest()
+
+
+def upstream_blobs(repo: str, rev: str, folder: str) -> dict[str, str]:
+    """rev 下某目录的文件 → git blob sha（不下载文件内容）。"""
+    proc = git("ls-tree", "-r", rev, "--", folder or ".", cwd=repo, timeout=180)
+    if proc.returncode != 0:
+        raise RuntimeError(f"ls-tree 失败: {proc.stderr.strip()[:160]}")
+    prefix = f"{folder}/" if folder else ""
+    blobs: dict[str, str] = {}
+    for line in proc.stdout.splitlines():
+        meta, _, path = line.partition("\t")
+        parts = meta.split()
+        if len(parts) < 3 or parts[1] != "blob":
+            continue
+        rel = path[len(prefix) :] if prefix and path.startswith(prefix) else path
+        blobs[rel] = parts[2]
+    return blobs
+
+
+def local_blobs(path: str) -> dict[str, str]:
+    blobs: dict[str, str] = {}
+    for dirpath, dirnames, filenames in os.walk(path):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for fn in filenames:
+            if fn in SKIP_FILES or fn.startswith("._"):
+                continue
+            full = os.path.join(dirpath, fn)
+            rel = os.path.relpath(full, path).replace(os.sep, "/")
+            try:
+                with open(full, "rb") as f:
+                    blobs[rel] = git_blob_sha(f.read())
+            except OSError:
+                continue
+    return blobs
+
+
 def checkout_folder(repo: str, rev: str, folder: str) -> tuple[str, str]:
     """把 rev 下的 folder 检出到临时目录，返回 (临时根目录, 目标目录)。
 
@@ -396,6 +453,7 @@ class Source:
 
 
 def prepare_sources(lock: dict, jobs: int = 6) -> dict[tuple[str, str], Source]:
+    prune_checkouts()
     groups = group_lock(lock)
     sources: dict[tuple[str, str], Source] = {}
     plan: list[tuple[tuple[str, str], Source]] = []
@@ -478,13 +536,14 @@ def check_skill(
         if deep:
             target = primary_path(name)
             if target and os.path.isdir(target):
-                root, tmp = checkout_folder(src.repo, src.rev, folder)
-                try:
-                    upstream = content_hash(tmp)
-                finally:
-                    shutil.rmtree(root, ignore_errors=True)
-                if content_hash(target) != upstream:
-                    result["detail"] += "（安装目录有本地改动）"
+                up = upstream_blobs(src.repo, src.rev, folder)
+                local = local_blobs(target)
+                changed = [p for p, sha in up.items() if local.get(p) != sha]
+                if changed:
+                    result["detail"] += (
+                        f"（安装目录有本地改动: {len(changed)} 个文件，"
+                        f"如 {changed[0]}）"
+                    )
     except Exception as exc:  # noqa: BLE001
         result.update(status="error", detail=str(exc))
     return result
@@ -538,20 +597,26 @@ def cmd_check(args: argparse.Namespace) -> int:
         "unmanaged": "无法检查",
     }
     counts = {key: sum(1 for r in results if r["status"] == key) for key in labels}
+    modified = [r for r in results if "本地改动" in r["detail"]]
     print(
         f"检查 {len(results)} 个技能（{time.time() - started:.1f}s）："
         f"可更新 {counts['update']}，已最新 {counts['latest']}，"
-        f"已钉 tag {counts['pinned']}，无法检查 {counts['unmanaged']}，失败 {counts['error']}\n"
+        f"已钉 tag {counts['pinned']}，无法检查 {counts['unmanaged']}，"
+        f"失败 {counts['error']}"
+        + (f"，本地改动 {len(modified)}" if modified else "")
+        + "\n"
     )
-    if counts["update"] or counts["pinned"] or counts["error"]:
-        show = [r for r in results if r["status"] != "latest"]
+    show = [r for r in results if r["status"] != "latest" or "本地改动" in r["detail"]]
+    if show:
         print_table(
             ["技能", "来源", "状态", "说明"],
             [
                 [
                     r["name"],
                     r["source"],
-                    labels.get(r["status"], r["status"]),
+                    "本地改动"
+                    if "本地改动" in r["detail"] and r["status"] == "latest"
+                    else labels.get(r["status"], r["status"]),
                     short(r["detail"], 70),
                 ]
                 for r in show
@@ -561,6 +626,8 @@ def cmd_check(args: argparse.Namespace) -> int:
             print(
                 "\n更新命令: skillmgr update [名称...]（等价 npx skills update -g -y）"
             )
+        if modified:
+            print("本地改动会在下次 update 时丢失：请把改动提回源仓库。")
     else:
         print("全部已是最新。")
     return 1 if counts["error"] else 0
