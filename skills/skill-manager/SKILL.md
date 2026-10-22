@@ -12,7 +12,7 @@ description: "Inventory, audit, find, install and update agent skills using the 
 1. **`~/.agents/skills/` 是唯一实体安装根**（`npx skills` 写入），`~/.claude/skills/` 是它的软链，`~/.config/opencode/skills/` 只放自建技能与厂商安装器产物。
 2. **绝不手工编辑安装目录**：`npx skills update` 是整体覆盖，改了会丢。要改内容 → 改源仓库 → 更新。
 3. **不要把 `git clone` + 软链当正式安装**，那是开发模式；正式安装用 `npx skills add`。
-4. 更新前如需回滚点，先跑 `skillkit backup`（本机有该工具时）。
+4. 改动只改源仓库；要回滚就 `git -C <repo> checkout <上一个提交>`，再重新 `npx skills add`（本机没有快照工具）。
 
 ## 命令
 
