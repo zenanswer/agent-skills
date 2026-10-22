@@ -22,19 +22,56 @@ description: >
 | 6 | Google AI Blog | https://blog.google/technology/ai/ | 企业研究 |
 | 7 | GitHub Trending | https://github.com/trending | 开源项目 |
 
-### 网络与源可用性
+## 抓取后端
 
-- `scripts/scraper.py` 的 Playwright 兜底是**可选**的：未安装 playwright 时只跳过失败源，不会再中断整次运行。
-  需要浏览器兜底（AI News 403、JS 渲染页面）时：
-  ```bash
-  pip install playwright && playwright install chromium
-  ```
-- 公司网络/代理环境下，`huggingface.co`、`blog.google` 可能因 DNS 污染不可达，`artificialintelligence-news.com` 可能返回 403。
-  实测可用的最小集合是 **3（LLM Stats）+ 5（MIT News）+ 7（GitHub Trending）**：
-  ```bash
-  python scripts/run.py --sources 3,5,7 --proxy "$HTTPS_PROXY"
-  ```
-- 抓取结果写入 `--output-dir`（默认 `/tmp`），不污染仓库。
+`scraper.py` 支持三种抓取方式，用 `--fetcher` 选择：
+
+| 模式 | 行为 |
+|---|---|
+| `auto`（默认） | 先本地 `requests`；失败后自动走 crawl4ai；最后才尝试 Playwright |
+| `requests` | 只用本地 HTTP（快，但受 DNS/反爬限制） |
+| `crawl4ai` | 全部走 crawl4ai 服务，一次 POST 批量抓 6 个源（约 10s） |
+
+### crawl4ai 配置（推荐）
+
+crawl4ai 服务在远端完成 JS 渲染、反爬与出口网络，能解决本机 DNS 污染/SSL EOF 问题：
+
+```bash
+# ~/.config/tech-scout-daily/env（chmod 600）
+CRAWL4AI_URL=http://10.10.11.7:11235
+CRAWL4AI_TOKEN=<bearer token>
+
+# 可选：LLM 批量翻译（不配则退回 Google，慢且容易被限流）
+LLM_API_URL=https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+LLM_MODEL_NAME=qwen3.7-plus
+LLM_API_KEY=sk-...
+# 翻译单独用快模型（实测 138 条约 1.5 分钟；用 3.7-plus 会到 10 分钟以上）
+TRANSLATE_LLM_MODEL=qwen3.6-flash
+```
+
+```bash
+python scripts/run.py --fetcher crawl4ai --output-dir ./daily
+```
+
+实测（本机网络）：
+
+| 源 | requests | crawl4ai |
+|---|---|---|
+| HuggingFace Daily / Trending | ❌ DNS 污染 | ✅ 50 + 30 篇 |
+| LLM Stats | ✅（易被 challenge） | ✅ 16 篇 |
+| MIT News | ✅ | ✅ 30 篇 |
+| Google AI Blog | ❌ SSL EOF | ✅ 20 篇（改用 RSS） |
+| GitHub Trending | ✅ | ✅ 11 篇 |
+| AI News | ❌ 403 | ❌ SG captcha（页面和 RSS 都被挡） |
+
+crawl4ai 模式下总量约 130–140 篇；`--fetcher crawl4ai` 全程约 2 分钟
+（抓取 ~10s + LLM 翻译 ~90s + 生成 ~10s）。
+
+### 其他说明
+
+- Playwright 兜底是**可选**的：没装时只跳过失败源，不会中断整次运行
+- 翻译默认 `auto`：检测到 `LLM_API_URL` 就用 LLM 批量翻译，否则用 Google（已加 1 req/s 限速，仍可能被限流）
+- 抓取结果写入 `--output-dir`（默认 `/tmp`），不污染仓库
 
 ## 执行流程
 
@@ -52,6 +89,7 @@ python scripts/run.py
 - `--insecure-ssl`：跳过 SSL 校验（用于受限网络环境）
 - `--proxy <url>`：HTTP 代理（如 `http://<host>:<port>`），用于解决 HuggingFace 等不可直连的源
 - `--ask-on-failure`：抓取后若仍有源失败，交互式询问是否提供代理 URL（推荐）
+- `--fetcher`：`auto` / `requests` / `crawl4ai`（推荐 `crawl4ai`，见上节）
 - `--use-playwright`：用 Playwright 浏览器作为所有源的 fetcher（绕过 anti-bot）
 - `--playwright-only-failures`：先用 requests 抓取，失败的源再用 Playwright 重试（推荐）
 - `--no-translate`：跳过翻译步骤（仅英文）

@@ -9,11 +9,14 @@ Supports two fetch modes:
 """
 
 import argparse
+import html as html_lib
 import json
 import os
 import re
 import sys
 import time
+import xml.etree.ElementTree as ET
+from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from urllib.parse import urljoin
@@ -47,6 +50,33 @@ HEADERS = {
 }
 
 REQUEST_TIMEOUT = 30
+
+# ── 可选：crawl4ai 服务（JS 渲染 / 反爬 / 干净出口） ──
+def _load_env_file() -> None:
+    for candidate in (
+        Path.home() / ".config" / "tech-scout-daily" / "env",
+        Path.cwd() / ".env",
+    ):
+        if not candidate.is_file():
+            continue
+        try:
+            for line in candidate.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+        except OSError:
+            pass
+
+
+_load_env_file()
+
+CRAWL4AI_URL = os.environ.get("CRAWL4AI_URL", "").rstrip("/")
+CRAWL4AI_TOKEN = os.environ.get("CRAWL4AI_TOKEN", "")
+_FETCHER = "auto"            # auto | requests | crawl4ai
+_C4A_CACHE: dict[str, str] = {}
+
 SESSION = requests.Session()
 SESSION.headers.update(HEADERS)
 
@@ -134,18 +164,65 @@ def _playwright_get(url: str, wait_selector: Optional[str] = None, wait_ms: int 
         return None
 
 
+def _crawl4ai_batch(urls: list[str]) -> dict[str, str]:
+    """一次 POST /crawl 抓多个 URL，返回 {url: html}。未配置时返回空。"""
+    if not (CRAWL4AI_URL and CRAWL4AI_TOKEN):
+        return {}
+    payload = {"urls": list(urls), "crawler_config": {"cache_mode": "BYPASS"}}
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {CRAWL4AI_TOKEN}",
+    }
+    try:
+        resp = requests.post(
+            f"{CRAWL4AI_URL}/crawl", json=payload, headers=headers,
+            timeout=max(120, REQUEST_TIMEOUT * len(urls)),
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"  [WARN] crawl4ai 请求失败: {e}", file=sys.stderr)
+        return {}
+    out: dict[str, str] = {}
+    for result in data.get("results") or []:
+        if result.get("success") and result.get("html"):
+            out[result["url"]] = result["html"]
+    _C4A_CACHE.update(out)
+    return out
+
+
+def _crawl4ai_html(url: str) -> Optional[str]:
+    if url in _C4A_CACHE:
+        return _C4A_CACHE[url]
+    if not (CRAWL4AI_URL and CRAWL4AI_TOKEN):
+        print("  [WARN] 未配置 CRAWL4AI_URL / CRAWL4AI_TOKEN，跳过 crawl4ai 兜底", file=sys.stderr)
+        return None
+    return _crawl4ai_batch([url]).get(url)
+
+
+def _unwrap_pre(text: str) -> str:
+    """crawl4ai 会把非 HTML 内容（JSON/XML）包在 <pre> 里。"""
+    m = re.search(r"<pre[^>]*>(.*?)</pre>", text, re.S | re.I)
+    return html_lib.unescape(m.group(1)) if m else text
+
+
 def _fetch_html(url: str, wait_selector: Optional[str] = None, wait_ms: int = 2000) -> Optional[str]:
-    """Unified fetcher: requests first, then Playwright fallback."""
-    # If user explicitly requested Playwright, go straight to it
+    """统一抓取：requests → crawl4ai → Playwright（可选）。"""
     if _USE_PLAYWRIGHT:
         return _playwright_get(url, wait_selector, wait_ms)
+    if _FETCHER == "crawl4ai":
+        return _crawl4ai_html(url)
 
-    # Try requests first
     resp = _safe_get(url)
     if resp is not None:
         return resp.text
 
-    # Fallback to Playwright if available
+    if _FETCHER in ("auto", "crawl4ai"):
+        cached = _crawl4ai_html(url)
+        if cached:
+            print(f"  [crawl4ai] {url}", file=sys.stderr)
+            return cached
+
     try:
         return _playwright_get(url, wait_selector, wait_ms)
     except Exception:
@@ -153,13 +230,21 @@ def _fetch_html(url: str, wait_selector: Optional[str] = None, wait_ms: int = 20
 
 
 def _fetch_json(url: str) -> Optional[dict]:
-    """Fetch JSON via requests (with proxy)."""
+    """Fetch JSON：requests 优先，失败后用 crawl4ai 的 <pre> 内容。"""
     resp = _safe_get(url)
     if resp is not None:
         try:
             return resp.json()
         except Exception as e:
             print(f"  [WARN] JSON parse failed for {url}: {e}", file=sys.stderr)
+
+    if _FETCHER in ("auto", "crawl4ai"):
+        cached = _C4A_CACHE.get(url) or _crawl4ai_html(url)
+        if cached:
+            try:
+                return json.loads(_unwrap_pre(cached))
+            except Exception as e:
+                print(f"  [WARN] crawl4ai JSON parse failed for {url}: {e}", file=sys.stderr)
     return None
 
 
@@ -450,9 +535,44 @@ def scrape_mit_ai_news() -> list[dict]:
 #  Source 6: Google AI Blog
 # ──────────────────────────────────────────────
 
+GOOGLE_RSS = "https://blog.google/innovation-and-ai/technology/ai/rss/"
+
+
+def _parse_rss(xml_text: str, source: str, source_type: str) -> list[dict]:
+    """解析 RSS 2.0/Atom（crawl4ai 返回的内容可能是 <pre> 包裹的 XML）。"""
+    try:
+        root = ET.fromstring(_unwrap_pre(xml_text))
+    except ET.ParseError:
+        return []
+    items: list[dict] = []
+    for node in root.iter("item"):
+        title = _clean_text(node.findtext("title") or "")
+        link = _clean_text(node.findtext("link") or "")
+        desc = _clean_text(re.sub(r"<[^>]+>", " ", node.findtext("description") or ""))
+        if not title:
+            continue
+        items.append({
+            "source": source,
+            "source_type": source_type,
+            "title": title,
+            "url": link,
+            "summary": desc[:400],
+            "authors": [],
+            "date": _parse_date(node.findtext("pubDate") or "") or "",
+            "upvotes": 0,
+            "tags": [],
+        })
+    return items
+
+
 def scrape_google_ai_blog() -> list[dict]:
-    """Scrape Google AI Blog."""
+    """Scrape Google AI Blog（优先 RSS，失败回退页面解析）。"""
     print("[6/7] Google AI Blog ...", file=sys.stderr)
+    rss = _fetch_html(GOOGLE_RSS, wait_ms=1000)
+    rss_items = _parse_rss(rss, "Google AI Blog", "corporate") if rss else []
+    if rss_items:
+        print(f"  -> {len(rss_items)} articles (RSS)", file=sys.stderr)
+        return rss_items[:20]
     url = "https://blog.google/technology/ai/"
     html = _fetch_html(url, wait_ms=2000)
     if not html:
@@ -792,13 +912,15 @@ SOURCES = {
 
 
 def main():
-    global _PROXY, _USE_PLAYWRIGHT, _INSECURE_SSL
+    global _PROXY, _USE_PLAYWRIGHT, _INSECURE_SSL, _FETCHER
 
     parser = argparse.ArgumentParser(description="Tech Scout Daily Scraper")
     parser.add_argument("--output", default="/tmp/tech_scout_raw.json", help="Output JSON file")
     parser.add_argument("--days", type=int, default=1, help="Days back to filter (unused for now)")
     parser.add_argument("--sources", default="", help="Comma-separated source numbers (default: all)")
     parser.add_argument("--proxy", default="", help="HTTP proxy URL (e.g. http://<host>:<port>)")
+    parser.add_argument("--fetcher", choices=["auto", "requests", "crawl4ai"], default="auto",
+                        help="抓取后端：auto=requests 失败后走 crawl4ai；requests；crawl4ai=全部走 crawl4ai")
     parser.add_argument("--use-playwright", action="store_true", help="Use Playwright for all sources (bypasses anti-bot, uses proxy)")
     parser.add_argument("--insecure-ssl", action="store_true", help="Skip SSL verification")
     args = parser.parse_args()
@@ -806,6 +928,7 @@ def main():
     # Apply runtime options
     if args.proxy:
         _PROXY = args.proxy
+    _FETCHER = args.fetcher
     if args.use_playwright:
         _USE_PLAYWRIGHT = True
     if args.insecure_ssl:
@@ -826,6 +949,21 @@ def main():
     if not valid:
         print("ERROR: No valid sources selected.", file=sys.stderr)
         sys.exit(1)
+
+    # crawl4ai 模式：一次批量抓取所有选中源，后续解析直接用缓存
+    if _FETCHER == "crawl4ai":
+        urls = [
+            {"1": "https://huggingface.co/api/daily_papers",
+             "2": "https://huggingface.co/papers/trending",
+             "3": "https://llm-stats.com/ai-news",
+             "4": "https://www.artificialintelligence-news.com/",
+             "5": "https://news.mit.edu/topic/artificial-intelligence2",
+             "6": "https://blog.google/innovation-and-ai/technology/ai/rss/",
+             "7": "https://github.com/trending"}[k]
+            for k in valid
+        ]
+        fetched = _crawl4ai_batch(urls)
+        print(f"[crawl4ai] prefetched {len(fetched)}/{len(urls)} sources", file=sys.stderr)
 
     all_items = []
     failures = []
@@ -882,6 +1020,7 @@ def main():
         "items": deduped,
     }
 
+    os.makedirs(os.path.dirname(os.path.abspath(args.output)) or ".", exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
 

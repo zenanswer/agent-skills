@@ -28,6 +28,8 @@ def main():
     parser.add_argument("--sources", default="", help="Comma-separated source numbers (default: all)")
     parser.add_argument("--no-translate", action="store_true", help="Skip translation step (English only)")
     parser.add_argument("--proxy", default="", help="HTTP proxy URL (e.g. http://<host>:<port>)")
+    parser.add_argument("--fetcher", choices=["auto", "requests", "crawl4ai"], default="auto",
+                        help="抓取后端：auto=requests 失败后走 crawl4ai；requests；crawl4ai=全部走 crawl4ai")
     parser.add_argument("--use-playwright", action="store_true", help="Use Playwright (browser-based, bypasses anti-bot)")
     parser.add_argument("--playwright-only-failures", action="store_true", help="Use Playwright only for failed sources (fallback)")
     parser.add_argument("--ask-on-failure", action="store_true", help="After initial fetch, if any source still failed, interactively ask to skip, supply a proxy, or abort")
@@ -47,6 +49,8 @@ def main():
     if args.insecure_ssl:
         env["TECH_SCOUT_INSECURE_SSL"] = "1"
 
+    os.makedirs(args.output_dir, exist_ok=True)
+
     # Step 1: Scrape
     print("=" * 60, flush=True)
     print("Step 1/3: Scraping sources...", flush=True)
@@ -63,6 +67,8 @@ def main():
         scraper_cmd += ["--proxy", args.proxy]
     if args.use_playwright:
         scraper_cmd += ["--use-playwright"]
+    if args.fetcher and args.fetcher != "auto":
+        scraper_cmd += ["--fetcher", args.fetcher]
 
     ret = subprocess.run(scraper_cmd, env=env)
     if ret.returncode != 0:
@@ -107,6 +113,8 @@ def main():
                         retry_cmd += ["--insecure-ssl"]
                     if args.proxy:
                         retry_cmd += ["--proxy", args.proxy]
+                    if args.fetcher and args.fetcher != "auto":
+                        retry_cmd += ["--fetcher", args.fetcher]
                     subprocess.run(retry_cmd, env=env)
                     # Merge results
                     retry_path = raw_file + ".retry"
@@ -171,6 +179,8 @@ def main():
                             ]
                             if args.insecure_ssl:
                                 retry_cmd += ["--insecure-ssl"]
+                            if args.fetcher and args.fetcher != "auto":
+                                retry_cmd += ["--fetcher", args.fetcher]
                             subprocess.run(retry_cmd, env=env)
                             retry_path = raw_file + ".retry2"
                             if os.path.exists(retry_path):
