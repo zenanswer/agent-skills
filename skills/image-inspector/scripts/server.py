@@ -72,6 +72,17 @@ FETCH_REMOTE = os.environ.get("LLM_FETCH_REMOTE", "true").strip().lower() in (
 )
 MAX_IMAGE_BYTES = int(os.environ.get("LLM_IMAGE_MAX_BYTES", str(25 * 1024 * 1024)))
 
+# Reasoning models (Qwen3 thinking variants) emit long reasoning chains before
+# the answer, which can blow past the MCP client timeout (JSON-RPC -32001).
+# Disable thinking by default; set LLM_ENABLE_THINKING=true to opt back in.
+ENABLE_THINKING = os.environ.get("LLM_ENABLE_THINKING", "false").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+_THINKING_EXPLICIT = "LLM_ENABLE_THINKING" in os.environ
+
+# Upstream vision API timeout (seconds).
+REQUEST_TIMEOUT = float(os.environ.get("LLM_REQUEST_TIMEOUT", "120"))
+
 # ---------------------------------------------------------------------------
 # MCP server
 # ---------------------------------------------------------------------------
@@ -337,9 +348,13 @@ async def understand_image(params: UnderstandImageInput) -> str:
         "max_tokens": params.max_tokens,
         "temperature": params.temperature,
     }
+    # Only send enable_thinking to Qwen3 models or when explicitly configured;
+    # other OpenAI-compatible endpoints may reject unknown fields.
+    if "qwen3" in MODEL_NAME.lower() or _THINKING_EXPLICIT:
+        payload["enable_thinking"] = ENABLE_THINKING
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
             resp = await client.post(endpoint, headers=headers, json=payload)
             resp.raise_for_status()
             data = resp.json()

@@ -79,7 +79,14 @@ def load_env() -> None:
 load_env()
 
 MAX_EDGE = int(os.environ.get("VISION_MAX_EDGE", "2048"))
-TIMEOUT = float(os.environ.get("VISION_TIMEOUT", "180"))
+TIMEOUT = float(os.environ.get("VISION_TIMEOUT",
+                              os.environ.get("LLM_REQUEST_TIMEOUT", "180")))
+_THINKING_ENV = ("VISION_ENABLE_THINKING", "LLM_ENABLE_THINKING")
+_THINKING_EXPLICIT = any(k in os.environ for k in _THINKING_ENV)
+ENABLE_THINKING = os.environ.get(
+    "VISION_ENABLE_THINKING",
+    os.environ.get("LLM_ENABLE_THINKING", "false"),
+).strip().lower() in ("1", "true", "yes", "on")
 FETCH_REMOTE = os.environ.get("VISION_FETCH_REMOTE", "true").lower() in (
     "1",
     "true",
@@ -312,6 +319,10 @@ async def chat(
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+        # 只对 Qwen3 系或显式配置时发送 enable_thinking；其它 OpenAI 兼容端点
+        # 可能不认这个字段，直接 400。
+        if model_family(provider.model) == "qwen3" or _THINKING_EXPLICIT:
+            payload["enable_thinking"] = ENABLE_THINKING
         try:
             text = await _post(provider, payload)
         except VisionError as exc:
