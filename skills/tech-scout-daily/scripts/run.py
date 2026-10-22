@@ -17,37 +17,99 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent
 SCRAPER = SCRIPT_DIR / "scraper.py"
 TRANSLATOR = SCRIPT_DIR / "translate.py"
+RATER = SCRIPT_DIR / "rate.py"
 GENERATOR = SCRIPT_DIR / "generate_daily.py"
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Tech Scout Daily — one-command runner")
+    parser = argparse.ArgumentParser(
+        description="Tech Scout Daily — one-command runner"
+    )
     parser.add_argument("--output-dir", default="/tmp", help="Output directory")
-    parser.add_argument("--format", choices=["md", "html", "both"], default="md", help="Output format: md / html / both")
-    parser.add_argument("--insecure-ssl", action="store_true", help="Skip SSL verification")
-    parser.add_argument("--sources", default="", help="Comma-separated source numbers (default: all)")
-    parser.add_argument("--no-translate", action="store_true", help="Skip translation step (English only)")
-    parser.add_argument("--proxy", default="", help="HTTP proxy URL (e.g. http://<host>:<port>)")
-    parser.add_argument("--fetcher", choices=["auto", "requests", "crawl4ai"], default="auto",
-                        help="抓取后端：auto=requests 失败后走 crawl4ai；requests；crawl4ai=全部走 crawl4ai")
-    parser.add_argument("--strict", action="store_true",
-                        help="crawl4ai 模式失败时不回退 requests")
-    parser.add_argument("--health", action="store_true",
-                        help="只检查各源可达性，不生成日报")
-    parser.add_argument("--use-playwright", action="store_true", help="Use Playwright (browser-based, bypasses anti-bot)")
-    parser.add_argument("--playwright-only-failures", action="store_true", help="Use Playwright only for failed sources (fallback)")
-    parser.add_argument("--ask-on-failure", action="store_true", help="After initial fetch, if any source still failed, interactively ask to skip, supply a proxy, or abort")
-    parser.add_argument("--no-print", action="store_true", help="Don't print the newspaper content to stdout")
+    parser.add_argument(
+        "--format",
+        choices=["md", "html", "both"],
+        default="md",
+        help="Output format: md / html / both",
+    )
+    parser.add_argument(
+        "--insecure-ssl", action="store_true", help="Skip SSL verification"
+    )
+    parser.add_argument(
+        "--sources", default="", help="Comma-separated source numbers (default: all)"
+    )
+    parser.add_argument(
+        "--no-translate",
+        action="store_true",
+        help="Skip translation step (English only)",
+    )
+    parser.add_argument(
+        "--proxy", default="", help="HTTP proxy URL (e.g. http://<host>:<port>)"
+    )
+    parser.add_argument(
+        "--fetcher",
+        choices=["auto", "requests", "crawl4ai"],
+        default="auto",
+        help="抓取后端：auto=requests 失败后走 crawl4ai；requests；crawl4ai=全部走 crawl4ai",
+    )
+    parser.add_argument(
+        "--strict", action="store_true", help="crawl4ai 模式失败时不回退 requests"
+    )
+    parser.add_argument(
+        "--health", action="store_true", help="只检查各源可达性，不生成日报"
+    )
+    parser.add_argument(
+        "--use-playwright",
+        action="store_true",
+        help="Use Playwright (browser-based, bypasses anti-bot)",
+    )
+    parser.add_argument(
+        "--playwright-only-failures",
+        action="store_true",
+        help="Use Playwright only for failed sources (fallback)",
+    )
+    parser.add_argument(
+        "--ask-on-failure",
+        action="store_true",
+        help="After initial fetch, if any source still failed, interactively ask to skip, supply a proxy, or abort",
+    )
+    parser.add_argument(
+        "--no-print",
+        action="store_true",
+        help="Don't print the newspaper content to stdout",
+    )
+    parser.add_argument(
+        "--no-rate", action="store_true", help="跳过 LLM 评分（沿用关键词启发式分）"
+    )
+    parser.add_argument(
+        "--rater",
+        choices=["auto", "llm", "keyword"],
+        default="auto",
+        help="评分方式：auto=有 LLM 配置就用 LLM；llm；keyword",
+    )
+    parser.add_argument(
+        "--rate-model",
+        default="",
+        help="评分模型（默认 RATE_LLM_MODEL / TRANSLATE_LLM_MODEL）",
+    )
     args = parser.parse_args()
+
+    rating_enabled = not args.no_rate and args.rater != "keyword"
+    steps = 4 if rating_enabled else 3
 
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     raw_file = os.path.join(args.output_dir, f"tech_scout_raw_{today}.json")
-    translated_file = os.path.join(args.output_dir, f"tech_scout_translated_{today}.json")
+    translated_file = os.path.join(
+        args.output_dir, f"tech_scout_translated_{today}.json"
+    )
+    rated_file = os.path.join(args.output_dir, f"tech_scout_rated_{today}.json")
     # When --format=both, generator writes both .md and .html with the same base
     if args.format == "both":
         out_file = os.path.join(args.output_dir, f"tech_scout_daily_{today}.md")
     else:
-        out_file = os.path.join(args.output_dir, f"tech_scout_daily_{today}.{args.format}")
+        out_file = os.path.join(
+            args.output_dir, f"tech_scout_daily_{today}.{args.format}"
+        )
 
     env = os.environ.copy()
     if args.insecure_ssl:
@@ -57,11 +119,13 @@ def main():
 
     # Step 1: Scrape
     print("=" * 60, flush=True)
-    print("Step 1/3: Scraping sources...", flush=True)
+    print(f"Step 1/{steps}: Scraping sources...", flush=True)
     print("=" * 60, flush=True)
     scraper_cmd = [
-        sys.executable, str(SCRAPER),
-        "--output", raw_file,
+        sys.executable,
+        str(SCRAPER),
+        "--output",
+        raw_file,
     ]
     if args.sources:
         scraper_cmd += ["--sources", args.sources]
@@ -102,9 +166,15 @@ def main():
         print("ERROR: 所有源都没有抓到内容。", file=sys.stderr)
         print(f"  失败源: {', '.join(failed) if failed else '未知'}", file=sys.stderr)
         print("  排查建议:", file=sys.stderr)
-        print("    1) crawl4ai 是否可达、CRAWL4AI_TOKEN 是否失效（401/403）", file=sys.stderr)
+        print(
+            "    1) crawl4ai 是否可达、CRAWL4AI_TOKEN 是否失效（401/403）",
+            file=sys.stderr,
+        )
         print("    2) 改用 --fetcher auto 观察哪些源本地可直连", file=sys.stderr)
-        print("    3) 网络受限时可加 --proxy <url> 或用 --health 只做连通性检查", file=sys.stderr)
+        print(
+            "    3) 网络受限时可加 --proxy <url> 或用 --health 只做连通性检查",
+            file=sys.stderr,
+        )
         sys.exit(2)
 
     # If --playwright-only-failures, check which sources failed and re-run with playwright for those
@@ -120,21 +190,27 @@ def main():
                     flush=True,
                 )
                 # Map source names back to source numbers
-                name_to_id = {v[0]: k for k, v in {
-                    "1": ("hf_daily", None),
-                    "2": ("hf_trending", None),
-                    "3": ("llm_stats", None),
-                    "4": ("the_decoder", None),
-                    "5": ("mit", None),
-                    "6": ("google_blog", None),
-                    "7": ("github", None),
-                }.items()}
+                name_to_id = {
+                    v[0]: k
+                    for k, v in {
+                        "1": ("hf_daily", None),
+                        "2": ("hf_trending", None),
+                        "3": ("llm_stats", None),
+                        "4": ("the_decoder", None),
+                        "5": ("mit", None),
+                        "6": ("google_blog", None),
+                        "7": ("github", None),
+                    }.items()
+                }
                 retry_ids = [name_to_id[n] for n in failed if n in name_to_id]
                 if retry_ids:
                     retry_cmd = [
-                        sys.executable, str(SCRAPER),
-                        "--output", raw_file + ".retry",
-                        "--sources", ",".join(retry_ids),
+                        sys.executable,
+                        str(SCRAPER),
+                        "--output",
+                        raw_file + ".retry",
+                        "--sources",
+                        ",".join(retry_ids),
                         "--use-playwright",
                     ]
                     if args.insecure_ssl:
@@ -151,7 +227,8 @@ def main():
                             retry_data = json.load(f)
                         data["items"].extend(retry_data.get("items", []))
                         data["sources_failed"] = [
-                            f for f in data.get("sources_failed", [])
+                            f
+                            for f in data.get("sources_failed", [])
                             if f not in retry_data.get("sources_used", [])
                         ]
                         with open(raw_file, "w", encoding="utf-8") as f:
@@ -192,18 +269,30 @@ def main():
                     except (EOFError, KeyboardInterrupt):
                         proxy_url = ""
                     if proxy_url:
-                        print(f"  [Retry] Re-running failed sources with proxy: {proxy_url}", flush=True)
+                        print(
+                            f"  [Retry] Re-running failed sources with proxy: {proxy_url}",
+                            flush=True,
+                        )
                         name_to_id = {
-                            "hf_daily": "1", "hf_trending": "2", "llm_stats": "3",
-                            "the_decoder": "4", "mit": "5", "google_blog": "6", "github": "7",
+                            "hf_daily": "1",
+                            "hf_trending": "2",
+                            "llm_stats": "3",
+                            "the_decoder": "4",
+                            "mit": "5",
+                            "google_blog": "6",
+                            "github": "7",
                         }
                         retry_ids = [name_to_id[n] for n in _failed if n in name_to_id]
                         if retry_ids:
                             retry_cmd = [
-                                sys.executable, str(SCRAPER),
-                                "--output", raw_file + ".retry2",
-                                "--sources", ",".join(retry_ids),
-                                "--proxy", proxy_url,
+                                sys.executable,
+                                str(SCRAPER),
+                                "--output",
+                                raw_file + ".retry2",
+                                "--sources",
+                                ",".join(retry_ids),
+                                "--proxy",
+                                proxy_url,
                             ]
                             if args.insecure_ssl:
                                 retry_cmd += ["--insecure-ssl"]
@@ -218,7 +307,8 @@ def main():
                                     data = json.load(f)
                                 data["items"].extend(retry_data.get("items", []))
                                 data["sources_failed"] = [
-                                    f for f in data.get("sources_failed", [])
+                                    f
+                                    for f in data.get("sources_failed", [])
                                     if f not in retry_data.get("sources_used", [])
                                 ]
                                 with open(raw_file, "w", encoding="utf-8") as f:
@@ -229,37 +319,77 @@ def main():
                     sys.exit(1)
             else:
                 # Non-interactive (e.g. opencode skill running piped): just skip
-                print("  [Note] Non-interactive mode: continuing with successful sources only.", flush=True)
+                print(
+                    "  [Note] Non-interactive mode: continuing with successful sources only.",
+                    flush=True,
+                )
 
     # Step 2: Translate to Chinese (bilingual)
     final_input = raw_file
     if not args.no_translate:
         print()
         print("=" * 60, flush=True)
-        print("Step 2/3: Translating to Chinese (bilingual mode)...", flush=True)
+        print(f"Step 2/{steps}: Translating to Chinese (bilingual mode)...", flush=True)
         print("=" * 60, flush=True)
         translator_cmd = [
-            sys.executable, str(TRANSLATOR),
-            "--input", raw_file,
-            "--output", translated_file,
-            "--fields", "title,summary",
+            sys.executable,
+            str(TRANSLATOR),
+            "--input",
+            raw_file,
+            "--output",
+            translated_file,
+            "--fields",
+            "title,summary",
         ]
         ret = subprocess.run(translator_cmd)
         if ret.returncode != 0:
-            print("WARNING: Translation failed, continuing with English only.", file=sys.stderr)
+            print(
+                "WARNING: Translation failed, continuing with English only.",
+                file=sys.stderr,
+            )
         elif os.path.exists(translated_file):
             final_input = translated_file
 
-    # Step 3: Generate newspaper
+    # Step 3: Score with LLM (replaces the keyword heuristic)
+    if rating_enabled:
+        print()
+        print("=" * 60, flush=True)
+        print(f"Step 3/{steps}: LLM scoring (tech / business value)...", flush=True)
+        print("=" * 60, flush=True)
+        rater_cmd = [
+            sys.executable,
+            str(RATER),
+            "--input",
+            final_input,
+            "--output",
+            rated_file,
+            "--rater",
+            args.rater,
+        ]
+        if args.rate_model:
+            rater_cmd += ["--model", args.rate_model]
+        ret = subprocess.run(rater_cmd)
+        if ret.returncode != 0:
+            print(
+                "WARNING: LLM scoring failed, keeping keyword scores.", file=sys.stderr
+            )
+        elif os.path.exists(rated_file):
+            final_input = rated_file
+
+    # Step 4: Generate newspaper
     print()
     print("=" * 60, flush=True)
-    print("Step 3/3: Generating daily newspaper...", flush=True)
+    print(f"Step {steps}/{steps}: Generating daily newspaper...", flush=True)
     print("=" * 60, flush=True)
     generator_cmd = [
-        sys.executable, str(GENERATOR),
-        "--input", final_input,
-        "--output", out_file,
-        "--format", args.format,
+        sys.executable,
+        str(GENERATOR),
+        "--input",
+        final_input,
+        "--output",
+        out_file,
+        "--format",
+        args.format,
     ]
     ret = subprocess.run(generator_cmd)
     if ret.returncode != 0:
@@ -274,6 +404,8 @@ def main():
     print(f"  Raw JSON: {raw_file}")
     if not args.no_translate and os.path.exists(translated_file):
         print(f"  Translated JSON: {translated_file}")
+    if rating_enabled and os.path.exists(rated_file):
+        print(f"  Rated JSON: {rated_file}")
     base = out_file.rsplit(".", 1)[0]
     if args.format in ("md", "both"):
         print(f"  📄 Markdown: {base}.md")

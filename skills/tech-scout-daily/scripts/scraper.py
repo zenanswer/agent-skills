@@ -25,13 +25,19 @@ from urllib.parse import urljoin
 try:
     import requests
 except ImportError:
-    print("ERROR: 'requests' is required. Install with: pip install requests", file=sys.stderr)
+    print(
+        "ERROR: 'requests' is required. Install with: pip install requests",
+        file=sys.stderr,
+    )
     sys.exit(1)
 
 try:
     from bs4 import BeautifulSoup
 except ImportError:
-    print("ERROR: 'beautifulsoup4' is required. Install with: pip install beautifulsoup4", file=sys.stderr)
+    print(
+        "ERROR: 'beautifulsoup4' is required. Install with: pip install beautifulsoup4",
+        file=sys.stderr,
+    )
     sys.exit(1)
 
 # ──────────────────────────────────────────────
@@ -51,6 +57,7 @@ HEADERS = {
 }
 
 REQUEST_TIMEOUT = 30
+
 
 # ── 可选：crawl4ai 服务（JS 渲染 / 反爬 / 干净出口） ──
 def _load_env_file() -> None:
@@ -75,10 +82,12 @@ _load_env_file()
 
 CRAWL4AI_URL = os.environ.get("CRAWL4AI_URL", "").rstrip("/")
 CRAWL4AI_TOKEN = os.environ.get("CRAWL4AI_TOKEN", "")
-_FETCHER = "auto"            # auto | requests | crawl4ai
+_FETCHER = "auto"  # auto | requests | crawl4ai
 _STRICT = False
 _C4A_CACHE: dict[str, str] = {}
-_C4A_DISK_CACHE = Path.home() / ".cache" / "tech-scout-daily" / datetime.now().strftime("%Y-%m-%d")
+_C4A_DISK_CACHE = (
+    Path.home() / ".cache" / "tech-scout-daily" / datetime.now().strftime("%Y-%m-%d")
+)
 
 SESSION = requests.Session()
 SESSION.headers.update(HEADERS)
@@ -89,6 +98,7 @@ _USE_PLAYWRIGHT: bool = False
 _INSECURE_SSL: bool = os.environ.get("TECH_SCOUT_INSECURE_SSL", "0") == "1"
 if _INSECURE_SSL:
     import urllib3
+
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ──────────────────────────────────────────────
@@ -108,7 +118,10 @@ def _get_playwright():
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        print("  [WARN] playwright 未安装，跳过浏览器兜底（pip install playwright && playwright install chromium）", file=sys.stderr)
+        print(
+            "  [WARN] playwright 未安装，跳过浏览器兜底（pip install playwright && playwright install chromium）",
+            file=sys.stderr,
+        )
         return None
 
     pw = sync_playwright().start()
@@ -144,7 +157,9 @@ def _safe_get(url: str, **kwargs) -> Optional[requests.Response]:
     return None
 
 
-def _playwright_get(url: str, wait_selector: Optional[str] = None, wait_ms: int = 2000) -> Optional[str]:
+def _playwright_get(
+    url: str, wait_selector: Optional[str] = None, wait_ms: int = 2000
+) -> Optional[str]:
     """Fetch URL via Playwright (with proxy if configured). Returns HTML or None."""
     try:
         browser = _get_playwright()
@@ -186,7 +201,9 @@ def _c4a_disk_put(url: str, html: str) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(html, encoding="utf-8")
-        (path.parent / "index.tsv").open("a", encoding="utf-8").write(f"{path.name}\t{url}\n")
+        (path.parent / "index.tsv").open("a", encoding="utf-8").write(
+            f"{path.name}\t{url}\n"
+        )
     except OSError:
         pass
 
@@ -209,7 +226,10 @@ def _crawl4ai_batch(urls: list[str]) -> dict[str, str]:
     if not pending:
         return out
     if not (CRAWL4AI_URL and CRAWL4AI_TOKEN):
-        print("  [WARN] 未配置 CRAWL4AI_URL / CRAWL4AI_TOKEN，跳过 crawl4ai", file=sys.stderr)
+        print(
+            "  [WARN] 未配置 CRAWL4AI_URL / CRAWL4AI_TOKEN，跳过 crawl4ai",
+            file=sys.stderr,
+        )
         return out
 
     payload = {"urls": pending, "crawler_config": {"cache_mode": "BYPASS"}}
@@ -221,7 +241,9 @@ def _crawl4ai_batch(urls: list[str]) -> dict[str, str]:
     for attempt in range(2):
         try:
             resp = requests.post(
-                f"{CRAWL4AI_URL}/crawl", json=payload, headers=headers,
+                f"{CRAWL4AI_URL}/crawl",
+                json=payload,
+                headers=headers,
                 timeout=max(120, REQUEST_TIMEOUT * len(pending)),
             )
             resp.raise_for_status()
@@ -230,12 +252,20 @@ def _crawl4ai_batch(urls: list[str]) -> dict[str, str]:
         except requests.HTTPError as e:
             status = getattr(e.response, "status_code", None)
             if status in (401, 403):
-                print(f"  [ERROR] crawl4ai 鉴权失败（HTTP {status}）：CRAWL4AI_TOKEN 可能已失效",
-                      file=sys.stderr)
+                print(
+                    f"  [ERROR] crawl4ai 鉴权失败（HTTP {status}）：CRAWL4AI_TOKEN 可能已失效",
+                    file=sys.stderr,
+                )
                 return out
-            print(f"  [WARN] crawl4ai 请求失败（尝试 {attempt + 1}/2）: {e}", file=sys.stderr)
+            print(
+                f"  [WARN] crawl4ai 请求失败（尝试 {attempt + 1}/2）: {e}",
+                file=sys.stderr,
+            )
         except Exception as e:
-            print(f"  [WARN] crawl4ai 请求失败（尝试 {attempt + 1}/2）: {e}", file=sys.stderr)
+            print(
+                f"  [WARN] crawl4ai 请求失败（尝试 {attempt + 1}/2）: {e}",
+                file=sys.stderr,
+            )
         if attempt == 0:
             time.sleep(2)
     if data is None:
@@ -254,7 +284,10 @@ def _crawl4ai_html(url: str) -> Optional[str]:
     if url in _C4A_CACHE:
         return _C4A_CACHE[url]
     if not (CRAWL4AI_URL and CRAWL4AI_TOKEN):
-        print("  [WARN] 未配置 CRAWL4AI_URL / CRAWL4AI_TOKEN，跳过 crawl4ai 兜底", file=sys.stderr)
+        print(
+            "  [WARN] 未配置 CRAWL4AI_URL / CRAWL4AI_TOKEN，跳过 crawl4ai 兜底",
+            file=sys.stderr,
+        )
         return None
     return _crawl4ai_batch([url]).get(url)
 
@@ -265,7 +298,9 @@ def _unwrap_pre(text: str) -> str:
     return html_lib.unescape(m.group(1)) if m else text
 
 
-def _fetch_html(url: str, wait_selector: Optional[str] = None, wait_ms: int = 2000) -> Optional[str]:
+def _fetch_html(
+    url: str, wait_selector: Optional[str] = None, wait_ms: int = 2000
+) -> Optional[str]:
     """统一抓取：requests → crawl4ai → Playwright（可选）。"""
     if _USE_PLAYWRIGHT:
         return _playwright_get(url, wait_selector, wait_ms)
@@ -319,7 +354,10 @@ def _fetch_json(url: str) -> Optional[dict]:
                 try:
                     return json.loads(_unwrap_pre(fetched))
                 except Exception as e:
-                    print(f"  [WARN] crawl4ai JSON parse failed for {url}: {e}", file=sys.stderr)
+                    print(
+                        f"  [WARN] crawl4ai JSON parse failed for {url}: {e}",
+                        file=sys.stderr,
+                    )
             if _STRICT:
                 return None
 
@@ -336,7 +374,10 @@ def _fetch_json(url: str) -> Optional[dict]:
             try:
                 return json.loads(_unwrap_pre(cached))
             except Exception as e:
-                print(f"  [WARN] crawl4ai JSON parse failed for {url}: {e}", file=sys.stderr)
+                print(
+                    f"  [WARN] crawl4ai JSON parse failed for {url}: {e}",
+                    file=sys.stderr,
+                )
     return None
 
 
@@ -354,10 +395,14 @@ def _parse_date(text: str) -> Optional[str]:
                 return datetime.strptime(m.group(1), "%B %d, %Y").strftime("%Y-%m-%d")
             except ValueError:
                 try:
-                    return datetime.strptime(m.group(1), "%b %d, %Y").strftime("%Y-%m-%d")
+                    return datetime.strptime(m.group(1), "%b %d, %Y").strftime(
+                        "%Y-%m-%d"
+                    )
                 except ValueError:
                     try:
-                        return datetime.strptime(m.group(1), "%d %B %Y").strftime("%Y-%m-%d")
+                        return datetime.strptime(m.group(1), "%d %B %Y").strftime(
+                            "%Y-%m-%d"
+                        )
                     except ValueError:
                         pass
     return None
@@ -372,6 +417,7 @@ def _clean_text(text: str) -> str:
 #  Source 1: HuggingFace Daily Papers (API)
 # ──────────────────────────────────────────────
 
+
 def scrape_hf_daily_papers() -> list[dict]:
     """Fetch via HuggingFace daily papers API."""
     print("[1/7] HuggingFace Daily Papers ...", file=sys.stderr)
@@ -382,17 +428,19 @@ def scrape_hf_daily_papers() -> list[dict]:
 
     results = []
     for p in papers[:50]:
-        results.append({
-            "source": "HuggingFace Daily Papers",
-            "source_type": "paper",
-            "title": p.get("title", ""),
-            "url": f"https://huggingface.co/papers/{p.get('paper', {}).get('id', '')}",
-            "summary": p.get("paper", {}).get("summary", ""),
-            "authors": p.get("paper", {}).get("authors", []),
-            "date": p.get("publishedAt", "")[:10] if p.get("publishedAt") else "",
-            "upvotes": p.get("upvotes", 0),
-            "tags": [],
-        })
+        results.append(
+            {
+                "source": "HuggingFace Daily Papers",
+                "source_type": "paper",
+                "title": p.get("title", ""),
+                "url": f"https://huggingface.co/papers/{p.get('paper', {}).get('id', '')}",
+                "summary": p.get("paper", {}).get("summary", ""),
+                "authors": p.get("paper", {}).get("authors", []),
+                "date": p.get("publishedAt", "")[:10] if p.get("publishedAt") else "",
+                "upvotes": p.get("upvotes", 0),
+                "tags": [],
+            }
+        )
     print(f"  -> {len(results)} papers", file=sys.stderr)
     return results
 
@@ -400,6 +448,7 @@ def scrape_hf_daily_papers() -> list[dict]:
 # ──────────────────────────────────────────────
 #  Source 2: HuggingFace Trending Papers (HTML)
 # ──────────────────────────────────────────────
+
 
 def scrape_hf_trending_papers() -> list[dict]:
     """Scrape HuggingFace trending papers page."""
@@ -420,18 +469,35 @@ def scrape_hf_trending_papers() -> list[dict]:
         if href and not href.startswith("http"):
             href = urljoin("https://huggingface.co", href)
 
+        # 摘要：卡片里的第一个 <p>（此前写死为空，导致该源只能靠标题计分）
+        summary_el = article.find("p")
+        summary = _clean_text(summary_el.get_text(" ")) if summary_el else ""
+        if summary.lower().startswith(("submitted by", "published on")):
+            summary = ""
+
+        # 发布日期：卡片脚注 "Published on Oct 9, 2026"
+        date_str = ""
+        m = re.search(
+            r"Published on\s+([A-Za-z]{3,9}\.?\s+\d{1,2},\s*\d{4})",
+            article.get_text(" ", strip=True),
+        )
+        if m:
+            date_str = _parse_date(m.group(1)) or ""
+
         if title:
-            results.append({
-                "source": "HuggingFace Trending Papers",
-                "source_type": "paper",
-                "title": _clean_text(title),
-                "url": href,
-                "summary": "",
-                "authors": [],
-                "date": "",
-                "upvotes": 0,
-                "tags": [],
-            })
+            results.append(
+                {
+                    "source": "HuggingFace Trending Papers",
+                    "source_type": "paper",
+                    "title": _clean_text(title),
+                    "url": href,
+                    "summary": summary,
+                    "authors": [],
+                    "date": date_str,
+                    "upvotes": 0,
+                    "tags": [],
+                }
+            )
 
     print(f"  -> {len(results)} papers", file=sys.stderr)
     return results
@@ -440,6 +506,129 @@ def scrape_hf_trending_papers() -> list[dict]:
 # ──────────────────────────────────────────────
 #  Source 3: LLM Stats News
 # ──────────────────────────────────────────────
+
+
+def _llm_stats_payload_cards(html: str) -> list[dict]:
+    """从 llm-stats 页面内嵌的 JSON-LD + RSC payload 解析新闻卡片。
+
+    页面上的新闻卡片是 <button>（无 href，靠 JS 跳转），DOM 抓取只能拿到
+    标题里拼接的分类/时长文本。真正的标题、摘要、原文链接、发布时间都在
+    __next 的 RSC payload 与 JSON-LD 里，这里直接读结构化数据。
+    """
+    cards: list[dict] = []
+
+    # 1) RSC payload：取 id -> description（JSON-LD 里没有摘要）
+    descs: dict[str, str] = {}
+    payload = html.replace('\\"', '"')
+    for m in re.finditer(
+        r'\{"id":"(https?://[^"]+)","title":"((?:[^"\\]|\\.)*)",'
+        r'"description":"((?:[^"\\]|\\.)*)"',
+        payload,
+    ):
+        descs[m.group(1)] = m.group(3)
+
+    # 2) JSON-LD：结构化标题、日期、原文链接（藏在 #item-<link> 里）
+    soup = BeautifulSoup(html, "html.parser")
+    for script in soup.find_all("script", type="application/ld+json"):
+        raw = script.string or script.get_text() or ""
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        graph = data.get("@graph", data) if isinstance(data, dict) else data
+        for node in graph if isinstance(graph, list) else [graph]:
+            if not isinstance(node, dict) or node.get("@type") != "NewsArticle":
+                continue
+            title = _clean_text(str(node.get("headline") or ""))
+            link = str(node.get("url") or node.get("@id") or "")
+            real = link.split("#item-", 1)[1] if "#item-" in link else ""
+            if not title or not real:
+                continue
+            desc = descs.get(real, "")
+            cards.append(
+                {
+                    "title": title,
+                    "url": real,
+                    "summary": _clean_text(desc),
+                    "date": str(node.get("datePublished") or "")[:10],
+                    "publisher": (node.get("sourceOrganization") or {}).get("name", ""),
+                }
+            )
+    return cards
+
+
+def _llm_stats_dom_cards(
+    soup: BeautifulSoup, url: str, only_blog: bool = False
+) -> list[dict]:
+    """DOM 兜底：以标题元素为锚点，避免把整块卡片文本当成标题。
+
+    only_blog=True 时只保留指向 /blog/ 的卡片（模型发布、深度解读），
+    过滤掉导航型标题与 /models/、/leaderboards/ 这类非新闻页。
+    """
+    cards: list[dict] = []
+    seen: set[str] = set()
+    skip_prefixes = (
+        "best ",
+        "top ",
+        "compare",
+        "faq",
+        "benchmark",
+        "leaderboard",
+        "pricing",
+        "explore",
+        "what is ",
+    )
+    for head in soup.find_all(["h2", "h3"]):
+        title = _clean_text(head.get_text(" "))
+        if len(title) < 20 or title.lower().startswith(skip_prefixes):
+            continue
+        key = _norm_title(title) or title.lower()
+        if key in seen:
+            continue
+
+        summary, href = "", ""
+        node = head
+        for _ in range(4):
+            node = node.parent
+            if node is None:
+                break
+            # 越过当前卡片就会包含多个标题，此时停止向上找，避免串到隔壁卡片
+            if len(node.find_all(["h2", "h3"])) > 1:
+                break
+            if not summary:
+                p = node.find("p")
+                if p:
+                    text = _clean_text(p.get_text(" "))
+                    summary = text if len(text) >= 40 else ""
+            if not href:
+                if node.name == "a" and node.get("href"):
+                    href = node["href"]
+                else:
+                    a = node.find("a", href=True)
+                    if a:
+                        href = a["href"]
+            if summary and href:
+                break
+
+        if href and not href.startswith("http"):
+            href = urljoin(url, href)
+        if only_blog and "/blog/" not in href:
+            continue
+        seen.add(key)
+        if not href:
+            slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:80]
+            href = f"{url}#{slug}"
+        cards.append(
+            {
+                "title": title,
+                "url": href,
+                "summary": summary,
+                "date": "",
+                "publisher": "",
+            }
+        )
+    return cards
+
 
 def scrape_llm_stats_news() -> list[dict]:
     """Scrape LLM Stats AI news page."""
@@ -450,87 +639,47 @@ def scrape_llm_stats_news() -> list[dict]:
         return []
 
     soup = BeautifulSoup(html, "html.parser")
-    results = []
 
-    # Blacklist URL patterns that are NOT news
-    NON_NEWS_PATTERNS = [
-        "/benchmarks/", "/models/", "/leaderboards/", "/playground",
-        "/arenas/", "/compare", "/category/", "model/view", "modelsView",
-        "ModelView", "Subscribe", "subscribe",
+    payload_cards = _llm_stats_payload_cards(html)
+    if not payload_cards:
+        print("  [WARN] 未解析到内嵌 payload，完全依赖 DOM 抓取", file=sys.stderr)
+
+    # DOM 补充 payload 未覆盖的卡片（如模型发布卡片指向 /blog/research/…）
+    known = {_norm_title(c["title"]) or c["title"].lower() for c in payload_cards}
+    extra = [
+        c
+        for c in _llm_stats_dom_cards(soup, url, only_blog=bool(payload_cards))
+        if (_norm_title(c["title"]) or c["title"].lower()) not in known
     ]
+    cards = payload_cards + extra
 
-    def _is_non_news(href: str, title: str) -> bool:
-        for pat in NON_NEWS_PATTERNS:
-            if pat.lower() in href.lower():
-                return True
-        # Skip benchmark/model descriptions that got scraped as text
-        if any(kw in title.lower() for kw in ["benchmark", "modelsview", "modelview", "announce type:"]):
-            return True
-        return False
-
-    # Try to find news article cards/links
-    for tag in soup.find_all(["article", "div"], class_=re.compile(r"article|news|post|card", re.I)):
-        title_el = tag.find(["h2", "h3", "h4"])
-        link_el = tag.find("a", href=True)
-        summary_el = tag.find("p")
-
-        title = _clean_text(title_el.get_text()) if title_el else ""
-        if not title or len(title) < 10:
-            continue
-
-        href = link_el["href"] if link_el else ""
-        if href and not href.startswith("http"):
-            href = urljoin(url, href)
-
-        if _is_non_news(href, title):
-            continue
-
-        date_str = ""
-        date_el = tag.find("time") or tag.find(class_=re.compile(r"date|time", re.I))
-        if date_el:
-            date_str = _parse_date(date_el.get_text()) or ""
-
-        results.append({
+    results = [
+        {
             "source": "LLM Stats News",
             "source_type": "news",
-            "title": title,
-            "url": href,
-            "summary": _clean_text(summary_el.get_text()) if summary_el else "",
+            "title": card["title"],
+            "url": card["url"],
+            "summary": card["summary"],
             "authors": [],
-            "date": date_str,
+            "date": card["date"],
             "upvotes": 0,
             "tags": [],
-        })
+        }
+        for card in cards
+    ]
 
-    # Fallback: if no structured articles found, grab links that look like news
-    if not results:
-        for a in soup.find_all("a", href=True):
-            txt = _clean_text(a.get_text())
-            href = a["href"]
-            if len(txt) > 20 and not any(skip in txt.lower() for skip in ["subscribe", "privacy", "terms", "cookie", "login", "sign up"]):
-                if not href.startswith("http"):
-                    href = urljoin(url, href)
-                if _is_non_news(href, txt):
-                    continue
-                results.append({
-                    "source": "LLM Stats News",
-                    "source_type": "news",
-                    "title": txt,
-                    "url": href,
-                    "summary": "",
-                    "authors": [],
-                    "date": "",
-                    "upvotes": 0,
-                    "tags": [],
-                })
-
-    print(f"  -> {len(results)} articles", file=sys.stderr)
+    print(
+        f"  -> {len(results)} articles ({sum(1 for r in results if r['summary'])} with summary, "
+        f"{len(extra)} from DOM)",
+        file=sys.stderr,
+    )
     return results[:30]
 
 
 # ──────────────────────────────────────────────
 #  Source 4: AI News (artificialintelligence-news.com)
 # ──────────────────────────────────────────────
+
 
 def scrape_ai_news() -> list[dict]:
     """Source 4: The Decoder RSS（原 AI News 站点被 SG captcha 永久拦截）。"""
@@ -545,6 +694,7 @@ def scrape_ai_news() -> list[dict]:
 #  Source 5: MIT AI News
 # ──────────────────────────────────────────────
 
+
 def scrape_mit_ai_news() -> list[dict]:
     """Scrape MIT AI news topic page."""
     print("[5/7] MIT AI News ...", file=sys.stderr)
@@ -557,11 +707,16 @@ def scrape_mit_ai_news() -> list[dict]:
     results = []
 
     # MIT news uses a specific structure with article cards
-    for article in soup.find_all(["article", "div"], class_=re.compile(r"article|news-item|post-item|term-page--item", re.I)):
+    for article in soup.find_all(
+        ["article", "div"],
+        class_=re.compile(r"article|news-item|post-item|term-page--item", re.I),
+    ):
         title_el = article.find(["h2", "h3", "h4"])
         link_el = article.find("a", href=True)
         summary_el = article.find("p")
-        date_el = article.find("time") or article.find(class_=re.compile(r"date|time", re.I))
+        date_el = article.find("time") or article.find(
+            class_=re.compile(r"date|time", re.I)
+        )
 
         title = _clean_text(title_el.get_text()) if title_el else ""
         if not title or len(title) < 10:
@@ -573,17 +728,19 @@ def scrape_mit_ai_news() -> list[dict]:
 
         date_str = _parse_date(date_el.get_text()) if date_el else ""
 
-        results.append({
-            "source": "MIT News",
-            "source_type": "academic",
-            "title": title,
-            "url": href,
-            "summary": _clean_text(summary_el.get_text()) if summary_el else "",
-            "authors": [],
-            "date": date_str,
-            "upvotes": 0,
-            "tags": [],
-        })
+        results.append(
+            {
+                "source": "MIT News",
+                "source_type": "academic",
+                "title": title,
+                "url": href,
+                "summary": _clean_text(summary_el.get_text()) if summary_el else "",
+                "authors": [],
+                "date": date_str,
+                "upvotes": 0,
+                "tags": [],
+            }
+        )
 
     print(f"  -> {len(results)} articles", file=sys.stderr)
     return results[:20]
@@ -610,17 +767,19 @@ def _parse_rss(xml_text: str, source: str, source_type: str) -> list[dict]:
         desc = _clean_text(re.sub(r"<[^>]+>", " ", node.findtext("description") or ""))
         if not title:
             continue
-        items.append({
-            "source": source,
-            "source_type": source_type,
-            "title": title,
-            "url": link,
-            "summary": desc[:400],
-            "authors": [],
-            "date": _parse_date(node.findtext("pubDate") or "") or "",
-            "upvotes": 0,
-            "tags": [],
-        })
+        items.append(
+            {
+                "source": source,
+                "source_type": source_type,
+                "title": title,
+                "url": link,
+                "summary": desc[:400],
+                "authors": [],
+                "date": _parse_date(node.findtext("pubDate") or "") or "",
+                "upvotes": 0,
+                "tags": [],
+            }
+        )
     return items
 
 
@@ -644,7 +803,9 @@ def scrape_google_ai_blog() -> list[dict]:
         title_el = article.find(["h2", "h3", "h4"])
         link_el = article.find("a", href=True)
         summary_el = article.find("p")
-        date_el = article.find("time") or article.find(class_=re.compile(r"date|time", re.I))
+        date_el = article.find("time") or article.find(
+            class_=re.compile(r"date|time", re.I)
+        )
 
         title = _clean_text(title_el.get_text()) if title_el else ""
         if not title or len(title) < 10:
@@ -656,17 +817,19 @@ def scrape_google_ai_blog() -> list[dict]:
 
         date_str = _parse_date(date_el.get_text()) if date_el else ""
 
-        results.append({
-            "source": "Google AI Blog",
-            "source_type": "corporate",
-            "title": title,
-            "url": href,
-            "summary": _clean_text(summary_el.get_text()) if summary_el else "",
-            "authors": [],
-            "date": date_str,
-            "upvotes": 0,
-            "tags": [],
-        })
+        results.append(
+            {
+                "source": "Google AI Blog",
+                "source_type": "corporate",
+                "title": title,
+                "url": href,
+                "summary": _clean_text(summary_el.get_text()) if summary_el else "",
+                "authors": [],
+                "date": date_str,
+                "upvotes": 0,
+                "tags": [],
+            }
+        )
 
     print(f"  -> {len(results)} articles", file=sys.stderr)
     return results[:20]
@@ -675,6 +838,7 @@ def scrape_google_ai_blog() -> list[dict]:
 # ──────────────────────────────────────────────
 #  Source 7: GitHub Trending
 # ──────────────────────────────────────────────
+
 
 def scrape_github_trending() -> list[dict]:
     """Scrape GitHub Trending page."""
@@ -716,7 +880,9 @@ def scrape_github_trending() -> list[dict]:
         # Stars — try multiple strategies
         stars = 0
         # Strategy 1: Look for the star count in the float-right area
-        star_area = article.find(class_=re.compile(r"float-sm-right|d-inline-block", re.I))
+        star_area = article.find(
+            class_=re.compile(r"float-sm-right|d-inline-block", re.I)
+        )
         if star_area:
             star_text = star_area.get_text(strip=True)
             # Parse "1,234" or "12.3k" format
@@ -734,7 +900,9 @@ def scrape_github_trending() -> list[dict]:
 
         # Strategy 2: Look for "stars today" text nearby
         if stars == 0:
-            for text_el in article.find_all(string=re.compile(r"stars?\s*(today|this week)", re.I)):
+            for text_el in article.find_all(
+                string=re.compile(r"stars?\s*(today|this week)", re.I)
+            ):
                 parent = text_el.parent
                 if parent:
                     num_text = parent.get_text(strip=True)
@@ -775,18 +943,20 @@ def scrape_github_trending() -> list[dict]:
                     except ValueError:
                         pass
 
-        results.append({
-            "source": "GitHub Trending",
-            "source_type": "repo",
-            "title": repo_name,
-            "url": full_url,
-            "summary": description,
-            "authors": [],
-            "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-            "upvotes": stars,
-            "tags": [language] if language else [],
-            "forks": forks,
-        })
+        results.append(
+            {
+                "source": "GitHub Trending",
+                "source_type": "repo",
+                "title": repo_name,
+                "url": full_url,
+                "summary": description,
+                "authors": [],
+                "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "upvotes": stars,
+                "tags": [language] if language else [],
+                "forks": forks,
+            }
+        )
 
     print(f"  -> {len(results)} repos", file=sys.stderr)
     return results[:25]
@@ -888,39 +1058,102 @@ def extract_entities(items: list[dict]) -> list[dict]:
 # ──────────────────────────────────────────────
 
 TECH_KEYWORDS = {
-    "transformer": 3, "diffusion": 3, "reinforcement learning": 3,
-    "rlhf": 3, "agent": 2, "multimodal": 2, "llm": 1,
-    "reasoning": 2, "chain-of-thought": 3, "mixture of experts": 3,
-    "moe": 3, "quantization": 2, "distillation": 2, "fine-tuning": 1,
-    "retrieval-augmented": 3, "rag": 3, "graph neural": 3, "gnn": 3,
-    "foundation model": 2, "zero-shot": 2, "few-shot": 1,
-    "self-supervised": 2, "contrastive": 1, "adversarial": 2,
-    "vision transformer": 2, "vit": 2, "swin": 2,
-    "neural radiance": 3, "nerf": 3, "gaussian splatting": 3,
-    "robot": 2, "embodied": 3, "autonomous": 2,
-    "safety": 2, "alignment": 3, "interpretability": 3,
-    "benchmark": 1, "sota": 2, "state-of-the-art": 2,
-    "new architecture": 3, "novel": 1, "breakthrough": 2,
-    "efficient": 1, "scaling": 2, "pretraining": 1,
-    "tokenizer": 1, "attention": 1, "latent": 1,
-    "code generation": 2, "swe-bench": 2, "humaneval": 1,
-    "protein": 3, "drug discovery": 3, "genomics": 3,
-    "quantum": 3, "neuromorphic": 3, "analog": 2,
+    "transformer": 3,
+    "diffusion": 3,
+    "reinforcement learning": 3,
+    "rlhf": 3,
+    "agent": 2,
+    "multimodal": 2,
+    "llm": 1,
+    "reasoning": 2,
+    "chain-of-thought": 3,
+    "mixture of experts": 3,
+    "moe": 3,
+    "quantization": 2,
+    "distillation": 2,
+    "fine-tuning": 1,
+    "retrieval-augmented": 3,
+    "rag": 3,
+    "graph neural": 3,
+    "gnn": 3,
+    "foundation model": 2,
+    "zero-shot": 2,
+    "few-shot": 1,
+    "self-supervised": 2,
+    "contrastive": 1,
+    "adversarial": 2,
+    "vision transformer": 2,
+    "vit": 2,
+    "swin": 2,
+    "neural radiance": 3,
+    "nerf": 3,
+    "gaussian splatting": 3,
+    "robot": 2,
+    "embodied": 3,
+    "autonomous": 2,
+    "safety": 2,
+    "alignment": 3,
+    "interpretability": 3,
+    "benchmark": 1,
+    "sota": 2,
+    "state-of-the-art": 2,
+    "new architecture": 3,
+    "novel": 1,
+    "breakthrough": 2,
+    "efficient": 1,
+    "scaling": 2,
+    "pretraining": 1,
+    "tokenizer": 1,
+    "attention": 1,
+    "latent": 1,
+    "code generation": 2,
+    "swe-bench": 2,
+    "humaneval": 1,
+    "protein": 3,
+    "drug discovery": 3,
+    "genomics": 3,
+    "quantum": 3,
+    "neuromorphic": 3,
+    "analog": 2,
 }
 
 BUSINESS_KEYWORDS = {
-    "enterprise": 2, "production": 2, "deployment": 1,
-    "saas": 2, "api": 1, "cloud": 1,
-    "billion": 3, "million": 1, "funding": 2, "series": 2,
-    "revenue": 2, "commercial": 2, "pricing": 1,
-    "startup": 1, "unicorn": 2, "ipo": 3,
-    "partnership": 1, "acquisition": 2, "merger": 2,
-    "healthcare": 2, "finance": 2, "education": 1,
-    "manufacturing": 2, "retail": 1, "autonomous driving": 3,
-    "chip": 2, "hardware": 1, "infrastructure": 2,
-    "regulation": 2, "compliance": 1, "governance": 1,
-    "open source": 1, "open weight": 1, "open-weight": 1,
-    "patent": 1, "intellectual property": 1,
+    "enterprise": 2,
+    "production": 2,
+    "deployment": 1,
+    "saas": 2,
+    "api": 1,
+    "cloud": 1,
+    "billion": 3,
+    "million": 1,
+    "funding": 2,
+    "series": 2,
+    "revenue": 2,
+    "commercial": 2,
+    "pricing": 1,
+    "startup": 1,
+    "unicorn": 2,
+    "ipo": 3,
+    "partnership": 1,
+    "acquisition": 2,
+    "merger": 2,
+    "healthcare": 2,
+    "finance": 2,
+    "education": 1,
+    "manufacturing": 2,
+    "retail": 1,
+    "autonomous driving": 3,
+    "chip": 2,
+    "hardware": 1,
+    "infrastructure": 2,
+    "regulation": 2,
+    "compliance": 1,
+    "governance": 1,
+    "open source": 1,
+    "open weight": 1,
+    "open-weight": 1,
+    "patent": 1,
+    "intellectual property": 1,
 }
 
 
@@ -956,6 +1189,30 @@ def score_item(item: dict) -> dict:
 
 
 # ──────────────────────────────────────────────
+#  Deduplication helpers
+# ──────────────────────────────────────────────
+
+
+def _norm_title(title: str) -> str:
+    """标题指纹（用于跨源去重）。过短的标题不参与，避免误合并。"""
+    norm = re.sub(r"[^a-z0-9]+", "", (title or "").lower())
+    return norm if len(norm) >= 25 else ""
+
+
+def _merge_duplicate(kept: dict, dup: dict) -> None:
+    """同一内容出现在多个源：保留信息更全的一条，并记录其它来源。"""
+    if len(dup.get("summary") or "") > len(kept.get("summary") or ""):
+        kept["summary"] = dup["summary"]
+    if not kept.get("date") and dup.get("date"):
+        kept["date"] = dup["date"]
+    other = dup.get("source", "")
+    if other and other != kept.get("source"):
+        also_in = kept.setdefault("also_in", [])
+        if other not in also_in:
+            also_in.append(other)
+
+
+# ──────────────────────────────────────────────
 #  Main
 # ──────────────────────────────────────────────
 
@@ -974,18 +1231,40 @@ def main():
     global _PROXY, _USE_PLAYWRIGHT, _INSECURE_SSL, _FETCHER, _STRICT
 
     parser = argparse.ArgumentParser(description="Tech Scout Daily Scraper")
-    parser.add_argument("--output", default="/tmp/tech_scout_raw.json", help="Output JSON file")
-    parser.add_argument("--days", type=int, default=1, help="Days back to filter (unused for now)")
-    parser.add_argument("--sources", default="", help="Comma-separated source numbers (default: all)")
-    parser.add_argument("--proxy", default="", help="HTTP proxy URL (e.g. http://<host>:<port>)")
-    parser.add_argument("--fetcher", choices=["auto", "requests", "crawl4ai"], default="auto",
-                        help="抓取后端：auto=requests 失败后走 crawl4ai；requests；crawl4ai=全部走 crawl4ai")
-    parser.add_argument("--strict", action="store_true",
-                        help="crawl4ai 模式失败时不回退 requests（默认会部分降级）")
-    parser.add_argument("--health", action="store_true",
-                        help="只做各源可达性检查，不写 JSON、不出报纸")
-    parser.add_argument("--use-playwright", action="store_true", help="Use Playwright for all sources (bypasses anti-bot, uses proxy)")
-    parser.add_argument("--insecure-ssl", action="store_true", help="Skip SSL verification")
+    parser.add_argument(
+        "--output", default="/tmp/tech_scout_raw.json", help="Output JSON file"
+    )
+    parser.add_argument(
+        "--days", type=int, default=1, help="Days back to filter (unused for now)"
+    )
+    parser.add_argument(
+        "--sources", default="", help="Comma-separated source numbers (default: all)"
+    )
+    parser.add_argument(
+        "--proxy", default="", help="HTTP proxy URL (e.g. http://<host>:<port>)"
+    )
+    parser.add_argument(
+        "--fetcher",
+        choices=["auto", "requests", "crawl4ai"],
+        default="auto",
+        help="抓取后端：auto=requests 失败后走 crawl4ai；requests；crawl4ai=全部走 crawl4ai",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="crawl4ai 模式失败时不回退 requests（默认会部分降级）",
+    )
+    parser.add_argument(
+        "--health", action="store_true", help="只做各源可达性检查，不写 JSON、不出报纸"
+    )
+    parser.add_argument(
+        "--use-playwright",
+        action="store_true",
+        help="Use Playwright for all sources (bypasses anti-bot, uses proxy)",
+    )
+    parser.add_argument(
+        "--insecure-ssl", action="store_true", help="Skip SSL verification"
+    )
     args = parser.parse_args()
 
     # Apply runtime options
@@ -998,6 +1277,7 @@ def main():
     if args.insecure_ssl:
         _INSECURE_SSL = True
         import urllib3
+
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     if _PROXY:
@@ -1017,17 +1297,21 @@ def main():
     # crawl4ai 模式：一次批量抓取所有选中源，后续解析直接用缓存
     if _FETCHER == "crawl4ai":
         urls = [
-            {"1": "https://huggingface.co/api/daily_papers",
-             "2": "https://huggingface.co/papers/trending",
-             "3": "https://llm-stats.com/ai-news",
-             "4": "https://the-decoder.com/feed/",
-             "5": "https://news.mit.edu/topic/artificial-intelligence2",
-             "6": "https://blog.google/innovation-and-ai/technology/ai/rss/",
-             "7": "https://github.com/trending"}[k]
+            {
+                "1": "https://huggingface.co/api/daily_papers",
+                "2": "https://huggingface.co/papers/trending",
+                "3": "https://llm-stats.com/ai-news",
+                "4": "https://the-decoder.com/feed/",
+                "5": "https://news.mit.edu/topic/artificial-intelligence2",
+                "6": "https://blog.google/innovation-and-ai/technology/ai/rss/",
+                "7": "https://github.com/trending",
+            }[k]
             for k in valid
         ]
         fetched = _crawl4ai_batch(urls)
-        print(f"[crawl4ai] prefetched {len(fetched)}/{len(urls)} sources", file=sys.stderr)
+        print(
+            f"[crawl4ai] prefetched {len(fetched)}/{len(urls)} sources", file=sys.stderr
+        )
 
     all_items = []
     failures = []
@@ -1041,7 +1325,9 @@ def main():
                 # Treat empty results as a failure (network blocked, etc.)
                 failures.append(name)
                 per_source[name] = 0
-                print(f"  [WARN] Source {key} ({name}) returned no items", file=sys.stderr)
+                print(
+                    f"  [WARN] Source {key} ({name}) returned no items", file=sys.stderr
+                )
             else:
                 all_items.extend(items)
                 per_source[name] = len(items)
@@ -1057,7 +1343,9 @@ def main():
             count = per_source.get(name, 0)
             flag = "OK  " if count else "FAIL"
             print(f"  {flag} [{key}] {name:16s} {count:3d} items", file=sys.stderr)
-        print(f"\n结果: {len(valid) - len(failures)}/{len(valid)} 源可用", file=sys.stderr)
+        print(
+            f"\n结果: {len(valid) - len(failures)}/{len(valid)} 源可用", file=sys.stderr
+        )
         sys.exit(0 if not failures else 1)
 
     # Cleanup Playwright browser if used
@@ -1069,17 +1357,25 @@ def main():
 
     print(f"\nTotal raw items: {len(all_items)}", file=sys.stderr)
 
-    # Deduplicate by URL
+    # Deduplicate by URL, then by normalized title (same story from several sources)
     seen_urls = set()
+    by_title: dict[str, dict] = {}
     deduped = []
     for item in all_items:
         url = item.get("url", "")
         if url and url in seen_urls:
             continue
+        title_key = _norm_title(item.get("title", ""))
+        if title_key and title_key in by_title:
+            _merge_duplicate(by_title[title_key], item)
+            continue
         if url:
             seen_urls.add(url)
+        if title_key:
+            by_title[title_key] = item
         deduped.append(item)
-    print(f"After dedup: {len(deduped)}", file=sys.stderr)
+    merged = len(all_items) - len(deduped)
+    print(f"After dedup: {len(deduped)} (merged {merged} duplicates)", file=sys.stderr)
 
     # Extract entities
     deduped = extract_entities(deduped)

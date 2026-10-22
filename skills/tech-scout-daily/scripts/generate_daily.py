@@ -5,6 +5,7 @@ Reads scraped JSON and produces a formatted daily newspaper in Markdown or HTML.
 """
 
 import argparse
+import hashlib
 import json
 import sys
 from collections import defaultdict
@@ -14,6 +15,7 @@ from datetime import datetime, timezone
 # ──────────────────────────────────────────────
 #  Helpers
 # ──────────────────────────────────────────────
+
 
 def _stars_label(stars: int) -> str:
     if stars >= 10000:
@@ -30,6 +32,81 @@ def _value_bar(value: float) -> str:
     return "█" * filled + "░" * empty
 
 
+def _score_key(item: dict, key: str) -> tuple:
+    """排序键：分数优先，同分按日期新→旧，最后用标题哈希保证确定性。
+
+    关键词/LLM 打分都会产生大量并列分；若不指定 tie-break，稳定排序会
+    退化成“按来源抓取顺序”，导致头条被排在最前面的同一来源垄断。
+    """
+    try:
+        value = float(item.get(key) or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    date = str(item.get("date") or "")
+    digest = hashlib.md5(str(item.get("title", "")).encode("utf-8")).hexdigest()
+    return (value, date, digest)
+
+
+def select_top_stories(
+    items: list,
+    key: str,
+    limit: int = 20,
+    min_per_source: int = 2,
+    max_share: float = 0.4,
+) -> list:
+    """选出头条：先保底每个来源若干条，再按分数补足，单源不超过 max_share。
+
+    - 保底（min_per_source）：避免小来源完全缺席
+    - 上限（max_share）：避免论文类来源凭长摘要刷屏
+    """
+    if not items:
+        return []
+
+    groups: dict[str, list] = defaultdict(list)
+    for item in items:
+        groups[str(item.get("source") or "未知")].append(item)
+    for group in groups.values():
+        group.sort(key=lambda x: _score_key(x, key), reverse=True)
+
+    cap = max(min_per_source, int(round(limit * max_share)))
+    picked: list = []
+    used = {id(x) for x in picked}
+    per_source: dict[str, int] = defaultdict(int)
+
+    # 第一轮：每个来源保底
+    for _ in range(max(0, min_per_source)):
+        for source in sorted(groups):
+            group = groups[source]
+            idx = per_source[source]
+            if idx < len(group) and len(picked) < limit:
+                picked.append(group[idx])
+                used.add(id(group[idx]))
+                per_source[source] += 1
+
+    # 第二轮：全局按分数补足，受单源上限约束
+    for item in sorted(items, key=lambda x: _score_key(x, key), reverse=True):
+        if len(picked) >= limit:
+            break
+        source = str(item.get("source") or "未知")
+        if id(item) in used or per_source[source] >= cap:
+            continue
+        picked.append(item)
+        used.add(id(item))
+        per_source[source] += 1
+
+    # 第三轮：来源太少时放宽上限，保证凑满
+    for item in sorted(items, key=lambda x: _score_key(x, key), reverse=True):
+        if len(picked) >= limit:
+            break
+        if id(item) in used:
+            continue
+        picked.append(item)
+        used.add(id(item))
+
+    picked.sort(key=lambda x: _score_key(x, key), reverse=True)
+    return picked
+
+
 def _source_emoji(source: str) -> str:
     mapping = {
         "HuggingFace Daily Papers": "🔬",
@@ -43,9 +120,26 @@ def _source_emoji(source: str) -> str:
     return mapping.get(source, "📌")
 
 
+def _scoring_method_note(items: list) -> str:
+    """说明本轮分数是 LLM 评的还是关键词启发式。"""
+    total = len(items)
+    llm = sum(1 for i in items if i.get("score_method") == "llm")
+    models = sorted(
+        {str(i.get("scored_model")) for i in items if i.get("scored_model")}
+    )
+    if llm and llm >= total * 0.5:
+        model = ", ".join(models) or "LLM"
+        tail = f"，其余 {total - llm} 条沿用关键词启发式" if llm < total else ""
+        return f"LLM 评分（{model}），{llm}/{total} 条{tail}"
+    if llm:
+        return f"混合评分：{llm}/{total} 条由 LLM 评，其余为关键词启发式"
+    return "关键词启发式（scraper.py 的 TECH_KEYWORDS / BUSINESS_KEYWORDS 加权），仅用于粗筛"
+
+
 # ──────────────────────────────────────────────
 #  Markdown Generator
 # ──────────────────────────────────────────────
+
 
 def generate_markdown(data: dict) -> str:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -55,7 +149,9 @@ def generate_markdown(data: dict) -> str:
 
     # Count by type
     paper_count = sum(1 for i in items if i.get("source_type") == "paper")
-    news_count = sum(1 for i in items if i.get("source_type") in ("news", "corporate", "academic"))
+    news_count = sum(
+        1 for i in items if i.get("source_type") in ("news", "corporate", "academic")
+    )
     repo_count = sum(1 for i in items if i.get("source_type") == "repo")
     avg_tech = sum(i.get("tech_value", 0) for i in items) / max(total, 1)
     avg_biz = sum(i.get("business_value", 0) for i in items) / max(total, 1)
@@ -124,7 +220,9 @@ def generate_markdown(data: dict) -> str:
                 stars = _stars_label(item.get("upvotes", 0))
                 tv = item.get("tech_value", 0)
                 bv = item.get("business_value", 0)
-                lines.append(f"| {idx} | [{title}]({url}) | {stars} | {tv}/10 | {bv}/10 |")
+                lines.append(
+                    f"| {idx} | [{title}]({url}) | {stars} | {tv}/10 | {bv}/10 |"
+                )
         else:
             lines.append("| # | 标题 | 技术价值 | 商用价值 |")
             lines.append("|---|------|---------|---------|")
@@ -153,9 +251,22 @@ def generate_markdown(data: dict) -> str:
             company_groups["其他"].append(item)
 
     major_companies = [
-        "OpenAI", "Google", "Meta", "Anthropic", "Microsoft", "Nvidia",
-        "Apple", "Amazon", "xAI", "DeepSeek", "Mistral", "HuggingFace",
-        "MIT", "Stanford", "Berkeley", "CMU",
+        "OpenAI",
+        "Google",
+        "Meta",
+        "Anthropic",
+        "Microsoft",
+        "Nvidia",
+        "Apple",
+        "Amazon",
+        "xAI",
+        "DeepSeek",
+        "Mistral",
+        "HuggingFace",
+        "MIT",
+        "Stanford",
+        "Berkeley",
+        "CMU",
     ]
 
     for company in major_companies:
@@ -177,7 +288,11 @@ def generate_markdown(data: dict) -> str:
         lines.append("")
 
     # Other companies
-    other = {k: v for k, v in company_groups.items() if k not in major_companies and k != "其他"}
+    other = {
+        k: v
+        for k, v in company_groups.items()
+        if k not in major_companies and k != "其他"
+    }
     if other:
         lines.append("### 其他机构")
         lines.append("")
@@ -229,10 +344,16 @@ def generate_markdown(data: dict) -> str:
     lines.append(f"> 共 40 条：按技术价值 Top 20 + 按商用价值 Top 20")
     lines.append("")
 
-    top_by_tech = sorted(items, key=lambda x: x.get("tech_value", 0), reverse=True)[:20]
-    top_by_biz = sorted(items, key=lambda x: x.get("business_value", 0), reverse=True)[:20]
+    top_by_tech = select_top_stories(items, "tech_value")
+    top_by_biz = select_top_stories(items, "business_value")
 
-    def _render_top_section(section_title: str, section_items: list, value_key: str, value_label: str, value_label_en: str):
+    def _render_top_section(
+        section_title: str,
+        section_items: list,
+        value_key: str,
+        value_label: str,
+        value_label_en: str,
+    ):
         lines.append(f"### 🧪 {section_title}（{len(section_items)} 条）")
         lines.append("")
         for rank, item in enumerate(section_items, 1):
@@ -258,6 +379,9 @@ def generate_markdown(data: dict) -> str:
                 lines.append(f"**链接 / Link**：{url}")
             if companies:
                 lines.append(f"**相关公司/机构**：{', '.join(companies)}")
+            also_in = item.get("also_in") or []
+            if also_in:
+                lines.append(f"**同源报道 / Also in**：{', '.join(also_in)}")
             lines.append("")
 
             if summary_zh:
@@ -271,7 +395,12 @@ def generate_markdown(data: dict) -> str:
 
             lines.append(f"**技术价值 / Tech Value**：{tv}/10 {_value_bar(tv)}")
             lines.append(f"**商用价值 / Business Value**：{bv}/10 {_value_bar(bv)}")
-            lines.append(f"**{value_label} / {value_label_en}**：{item.get(value_key, 0)}/10")
+            lines.append(
+                f"**{value_label} / {value_label_en}**：{item.get(value_key, 0)}/10"
+            )
+            reason = item.get("rating_reason")
+            if reason:
+                lines.append(f"**评分理由 / Why**：{reason}")
             lines.append("")
             lines.append("---")
             lines.append("")
@@ -333,6 +462,8 @@ def generate_markdown(data: dict) -> str:
     lines.append("| 5-6 | 明确商业场景，需要进一步验证 |")
     lines.append("| 3-4 | 远期商业潜力，5年以上 |")
     lines.append("| 1-2 | 纯学术研究，商业前景不明 |")
+    lines.append("")
+    lines.append(f"> 本轮评分方式：{_scoring_method_note(items)}")
 
     return "\n".join(lines)
 
@@ -341,6 +472,7 @@ def generate_markdown(data: dict) -> str:
 #  HTML Generator
 # ──────────────────────────────────────────────
 
+
 def generate_html(data: dict) -> str:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -348,7 +480,9 @@ def generate_html(data: dict) -> str:
     total = len(items)
 
     paper_count = sum(1 for i in items if i.get("source_type") == "paper")
-    news_count = sum(1 for i in items if i.get("source_type") in ("news", "corporate", "academic"))
+    news_count = sum(
+        1 for i in items if i.get("source_type") in ("news", "corporate", "academic")
+    )
     repo_count = sum(1 for i in items if i.get("source_type") == "repo")
     avg_tech = sum(i.get("tech_value", 0) for i in items) / max(total, 1)
     avg_biz = sum(i.get("business_value", 0) for i in items) / max(total, 1)
@@ -375,9 +509,22 @@ def generate_html(data: dict) -> str:
             company_groups["其他"].append(item)
 
     major_companies = [
-        "OpenAI", "Google", "Meta", "Anthropic", "Microsoft", "Nvidia",
-        "Apple", "Amazon", "xAI", "DeepSeek", "Mistral", "HuggingFace",
-        "MIT", "Stanford", "Berkeley", "CMU",
+        "OpenAI",
+        "Google",
+        "Meta",
+        "Anthropic",
+        "Microsoft",
+        "Nvidia",
+        "Apple",
+        "Amazon",
+        "xAI",
+        "DeepSeek",
+        "Mistral",
+        "HuggingFace",
+        "MIT",
+        "Stanford",
+        "Berkeley",
+        "CMU",
     ]
 
     # Build HTML with embedded CSS & JS
@@ -444,6 +591,8 @@ def generate_html(data: dict) -> str:
   .item-card {{ padding: 16px; margin: 12px 0; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev); }}
   .item-meta {{ display: flex; gap: 12px; flex-wrap: wrap; margin: 8px 0; font-size: 0.9em; color: var(--text-dim); }}
   .item-meta strong {{ color: var(--text); }}
+  .reason {{ margin: 6px 0 0; font-size: 0.9em; color: var(--text-dim); }}
+  .scoring-note {{ margin-top: 12px; color: var(--text-dim); }}
   .highlight {{ background: var(--yellow); color: var(--bg); padding: 0 2px; border-radius: 2px; }}
   .company-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin: 12px 0; }}
   .company-card {{ padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev); }}
@@ -467,8 +616,8 @@ def generate_html(data: dict) -> str:
 <h1>🤖 AI Tech Scout Daily — {today}</h1>
 <blockquote>
   生成时间：{now_str}<br>
-  收录来源：{', '.join(data.get('sources_used', []))}<br>
-  {"⚠️ 未获取：" + ', '.join(data['sources_failed']) + "<br>" if data.get('sources_failed') else ""}
+  收录来源：{", ".join(data.get("sources_used", []))}<br>
+  {"⚠️ 未获取：" + ", ".join(data["sources_failed"]) + "<br>" if data.get("sources_failed") else ""}
   今日收录：{total} 篇
 </blockquote>
 
@@ -494,7 +643,9 @@ def generate_html(data: dict) -> str:
             continue
         emoji = _source_emoji(source)
         html += f"<h3>{emoji} {source}（{len(group)} 篇）</h3>\n"
-        html += "<details><summary>展开 / 收起</summary><div class='content'>\n<table>\n"
+        html += (
+            "<details><summary>展开 / 收起</summary><div class='content'>\n<table>\n"
+        )
 
         if source == "GitHub Trending":
             html += "<tr><th>#</th><th>项目</th><th>Stars</th><th>技术价值</th><th>商用价值</th></tr>\n"
@@ -506,7 +657,9 @@ def generate_html(data: dict) -> str:
                 bv = item.get("business_value", 0)
                 html += f"<tr><td>{idx}</td><td><a href='{url}'>{title}</a></td><td>{stars}</td><td class='score'>{tv}/10</td><td class='score'>{bv}/10</td></tr>\n"
         else:
-            html += "<tr><th>#</th><th>标题</th><th>技术价值</th><th>商用价值</th></tr>\n"
+            html += (
+                "<tr><th>#</th><th>标题</th><th>技术价值</th><th>商用价值</th></tr>\n"
+            )
             for idx, item in enumerate(group, 1):
                 title = item["title"]
                 url = item["url"]
@@ -529,9 +682,11 @@ def generate_html(data: dict) -> str:
             tv = item.get("tech_value", 0)
             bv = item.get("business_value", 0)
             link = f"<a href='{url}'>{title}</a>" if url else title
-            html += f"<div class='item'>{link} <span class='score'>{tv}/{bv}</span></div>\n"
+            html += (
+                f"<div class='item'>{link} <span class='score'>{tv}/{bv}</span></div>\n"
+            )
         if len(group) > 5:
-            html += f"<div class='item' style='color:var(--text-dim);'>...还有 {len(group)-5} 条</div>\n"
+            html += f"<div class='item' style='color:var(--text-dim);'>...还有 {len(group) - 5} 条</div>\n"
         html += "</div>\n"
 
     html += "</div>\n"
@@ -540,10 +695,16 @@ def generate_html(data: dict) -> str:
     html += "<h2 id='top-stories'>🔥 头条深度 / Top Stories</h2>\n"
     html += "<p>共 40 条：按技术价值 Top 20 + 按商用价值 Top 20</p>\n"
 
-    top_by_tech_html = sorted(items, key=lambda x: x.get("tech_value", 0), reverse=True)[:20]
-    top_by_biz_html = sorted(items, key=lambda x: x.get("business_value", 0), reverse=True)[:20]
+    top_by_tech_html = select_top_stories(items, "tech_value")
+    top_by_biz_html = select_top_stories(items, "business_value")
 
-    def _render_html_section(section_title: str, section_items: list, value_key: str, value_label_en: str, anchor: str):
+    def _render_html_section(
+        section_title: str,
+        section_items: list,
+        value_key: str,
+        value_label_en: str,
+        anchor: str,
+    ):
         html_local = f"<h3 id='{anchor}'>{section_title}</h3>\n"
         for rank, item in enumerate(section_items, 1):
             title = item["title"]
@@ -565,9 +726,18 @@ def generate_html(data: dict) -> str:
             html_local += "<div class='item-meta'>"
             html_local += f"<span><strong>来源</strong>：{source}</span>"
             if url:
-                html_local += f"<span><strong>链接</strong>：<a href='{url}'>{url}</a></span>"
+                html_local += (
+                    f"<span><strong>链接</strong>：<a href='{url}'>{url}</a></span>"
+                )
             if companies:
-                html_local += f"<span><strong>公司</strong>：{', '.join(companies)}</span>"
+                html_local += (
+                    f"<span><strong>公司</strong>：{', '.join(companies)}</span>"
+                )
+            also_in = item.get("also_in") or []
+            if also_in:
+                html_local += (
+                    f"<span><strong>同源报道</strong>：{', '.join(also_in)}</span>"
+                )
             html_local += "</div>"
 
             if summary_zh:
@@ -577,6 +747,11 @@ def generate_html(data: dict) -> str:
             html_local += f"<p><strong>技术价值</strong>：{tv}/10 <span class='bar'>{_value_bar(tv)}</span> &nbsp; "
             html_local += f"<strong>商用价值</strong>：{bv}/10 <span class='bar'>{_value_bar(bv)}</span> &nbsp; "
             html_local += f"<strong style='color:var(--accent);'>{value_label_en}：{item.get(value_key, 0)}/10</strong></p>\n"
+            reason = item.get("rating_reason")
+            if reason:
+                html_local += (
+                    f"<p class='reason'><strong>评分理由</strong>：{reason}</p>\n"
+                )
             html_local += "</div>"
         return html_local
 
@@ -627,6 +802,7 @@ def generate_html(data: dict) -> str:
   <tr><td class="score-mid">3-4</td><td>远期商业潜力，5年以上</td></tr>
   <tr><td class="score-low">1-2</td><td>纯学术研究，商业前景不明</td></tr>
 </table>"""
+    html += f"<p class='scoring-note'><strong>本轮评分方式</strong>：{_scoring_method_note(items)}</p>\n"
 
     # Sidebar TOC
     html += "</div><!-- main -->\n<div class='sidebar'>\n<nav class='toc'>\n"
@@ -690,11 +866,21 @@ def generate_html(data: dict) -> str:
 #  Main
 # ──────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser(description="Tech Scout Daily Generator")
     parser.add_argument("--input", required=True, help="Input JSON file from scraper")
-    parser.add_argument("--output", default="/tmp/tech_scout_daily.md", help="Output file (extension auto-determined if --format=both)")
-    parser.add_argument("--format", choices=["md", "html", "both"], default="md", help="Output format: md / html / both")
+    parser.add_argument(
+        "--output",
+        default="/tmp/tech_scout_daily.md",
+        help="Output file (extension auto-determined if --format=both)",
+    )
+    parser.add_argument(
+        "--format",
+        choices=["md", "html", "both"],
+        default="md",
+        help="Output format: md / html / both",
+    )
     args = parser.parse_args()
 
     try:
@@ -708,7 +894,11 @@ def main():
         print("ERROR: No items in input file.", file=sys.stderr)
         sys.exit(1)
 
-    base = args.output.rsplit(".", 1)[0] if args.output.endswith((".md", ".html")) else args.output
+    base = (
+        args.output.rsplit(".", 1)[0]
+        if args.output.endswith((".md", ".html"))
+        else args.output
+    )
 
     outputs = []
     if args.format in ("md", "both"):

@@ -7,20 +7,21 @@ Adds Chinese translations to the scraped JSON data.
 import argparse
 import json
 import os
-import re
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
-
-import requests
 
 try:
     from deep_translator import GoogleTranslator
 except ImportError:
-    print("ERROR: 'deep-translator' is required. Install with: pip install deep-translator", file=sys.stderr)
+    print(
+        "ERROR: 'deep-translator' is required. Install with: pip install deep-translator",
+        file=sys.stderr,
+    )
     sys.exit(1)
+
+from llm_common import LLM_MODEL, chat, extract_json_array, llm_available
 
 
 def _translate(text: str, max_retries: int = 3) -> str:
@@ -48,48 +49,9 @@ def _translate(text: str, max_retries: int = 3) -> str:
                 return ""
 
 
-# ── 可选 LLM 翻译（复用 image-inspector 的配置；比 Google 快且质量更好） ──
-def _load_env_file() -> None:
-    for candidate in (
-        Path.home() / ".config" / "tech-scout-daily" / "env",
-        Path.cwd() / ".env",
-    ):
-        if not candidate.is_file():
-            continue
-        try:
-            for line in candidate.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
-        except OSError:
-            pass
-
-
-_load_env_file()
-
-LLM_URL = os.environ.get("LLM_API_URL", "").rstrip("/")
-LLM_MODEL = os.environ.get("LLM_MODEL_NAME", "")
-# 翻译用单独的模型（长文本翻译不需要强推理，flash 级快很多）
+# ── 可选 LLM 翻译（配置与评分共用 llm_common；比 Google 快且质量更好） ──
 TRANSLATE_MODEL = os.environ.get("TRANSLATE_LLM_MODEL") or LLM_MODEL
-LLM_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_BATCH = int(os.environ.get("TECH_SCOUT_LLM_BATCH", "12"))
-
-
-def _llm_available() -> bool:
-    return bool(LLM_URL and LLM_MODEL and LLM_KEY)
-
-
-def _extract_json_array(text: str):
-    body = text.strip()
-    fence = re.search(r"```(?:json)?\s*(.*?)```", body, re.S)
-    if fence:
-        body = fence.group(1).strip()
-    start, end = body.find("["), body.rfind("]")
-    if start == -1 or end == -1:
-        raise ValueError("no JSON array")
-    return json.loads(body[start:end + 1])
 
 
 def _llm_translate_batch(batch: list[dict], fields: list[str]) -> list[dict]:
@@ -103,24 +65,8 @@ def _llm_translate_batch(batch: list[dict], fields: list[str]) -> list[dict]:
         '[{"i":0,"title":"...","summary":"..."}].\n\n'
         + json.dumps(payload_items, ensure_ascii=False)
     )
-    payload = {
-        "model": TRANSLATE_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0,
-        "max_tokens": 8192,
-    }
-    # Qwen3 thinking 会让单批超过 3 分钟；翻译不需要推理
-    if "qwen3" in TRANSLATE_MODEL.lower():
-        payload["enable_thinking"] = False
-    resp = requests.post(
-        f"{LLM_URL}/chat/completions",
-        headers={"Authorization": f"Bearer {LLM_KEY}", "Content-Type": "application/json"},
-        json=payload,
-        timeout=120,
-    )
-    resp.raise_for_status()
-    content = resp.json()["choices"][0]["message"]["content"]
-    return _extract_json_array(content)
+    content = chat(prompt, TRANSLATE_MODEL, max_tokens=8192, timeout=120)
+    return extract_json_array(content)
 
 
 def _translate_with_llm(items: list[dict], fields: list[str]) -> int:
@@ -136,9 +82,17 @@ def _translate_with_llm(items: list[dict], fields: list[str]) -> int:
     print(f"  LLM 翻译（{TRANSLATE_MODEL}，batch={LLM_BATCH}）…", file=sys.stderr)
     done = 0
     for start in range(0, len(rows), LLM_BATCH):
-        chunk = rows[start:start + LLM_BATCH]
+        chunk = rows[start : start + LLM_BATCH]
         try:
-            translated = _llm_translate_batch(chunk, fields)
+            # 单批失败先重试一次：LLM 端点偶发 5xx 时，直接回退 Google 会撞 429 限流
+            for attempt in range(2):
+                try:
+                    translated = _llm_translate_batch(chunk, fields)
+                    break
+                except Exception:
+                    if attempt:
+                        raise
+                    time.sleep(2)
         except Exception as exc:
             print(f"  [WARN] LLM 翻译失败（{exc}），该批回退 Google", file=sys.stderr)
             for row in chunk:
@@ -158,8 +112,10 @@ def _translate_with_llm(items: list[dict], fields: list[str]) -> int:
                 if value:
                     items[idx][f"{field}_zh"] = value
                     done += 1
-        print(f"  [{min(start + LLM_BATCH, len(rows))}/{len(rows)}] LLM translated",
-              file=sys.stderr)
+        print(
+            f"  [{min(start + LLM_BATCH, len(rows))}/{len(rows)}] LLM translated",
+            file=sys.stderr,
+        )
     return done
 
 
@@ -178,8 +134,14 @@ def _translate_limited(text: str) -> str:
     return _translate(text)
 
 
-def translate_json(input_path: str, output_path: str, fields: list[str] = None,
-                   max_items: int = None, jobs: int = 8, translator: str = "auto"):
+def translate_json(
+    input_path: str,
+    output_path: str,
+    fields: list[str] = None,
+    max_items: int = None,
+    jobs: int = 8,
+    translator: str = "auto",
+):
     """Add Chinese translations to the JSON file."""
     if fields is None:
         fields = ["title", "summary"]
@@ -208,14 +170,16 @@ def translate_json(input_path: str, output_path: str, fields: list[str] = None,
 
     print(f"  {len(tasks)} fields to translate", file=sys.stderr)
 
-    use_llm = translator == "llm" or (translator == "auto" and _llm_available())
+    use_llm = translator == "llm" or (translator == "auto" and llm_available())
     if use_llm:
         done = _translate_with_llm(items, fields)
         if done:
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-            print(f"Done. {total} items, {done} fields translated (LLM). Output: {output_path}",
-                  file=sys.stderr)
+            print(
+                f"Done. {total} items, {done} fields translated (LLM). Output: {output_path}",
+                file=sys.stderr,
+            )
             return
         print("  [WARN] LLM 翻译无结果，回退 Google", file=sys.stderr)
 
@@ -223,7 +187,9 @@ def translate_json(input_path: str, output_path: str, fields: list[str] = None,
     unique_texts = sorted({text for _, _, text in tasks})
     translated: dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
-        for i, (text, zh) in enumerate(zip(unique_texts, pool.map(_translate_limited, unique_texts)), 1):
+        for i, (text, zh) in enumerate(
+            zip(unique_texts, pool.map(_translate_limited, unique_texts)), 1
+        ):
             if zh:
                 translated[text] = zh
             if i % 20 == 0 or i == len(unique_texts):
@@ -243,16 +209,25 @@ def translate_json(input_path: str, output_path: str, fields: list[str] = None,
 def main():
     parser = argparse.ArgumentParser(description="Tech Scout Daily Translator")
     parser.add_argument("--input", required=True, help="Input JSON file from scraper")
-    parser.add_argument("--output", required=True, help="Output JSON file with translations")
-    parser.add_argument("--fields", default="title,summary", help="Comma-separated fields to translate")
+    parser.add_argument(
+        "--output", required=True, help="Output JSON file with translations"
+    )
+    parser.add_argument(
+        "--fields", default="title,summary", help="Comma-separated fields to translate"
+    )
     parser.add_argument("--jobs", type=int, default=8, help="并发翻译数（默认 8）")
-    parser.add_argument("--translator", choices=["auto", "llm", "google"], default="auto",
-                        help="auto=有 LLM 配置用 LLM，否则 Google；llm；google")
+    parser.add_argument(
+        "--translator",
+        choices=["auto", "llm", "google"],
+        default="auto",
+        help="auto=有 LLM 配置用 LLM，否则 Google；llm；google",
+    )
     args = parser.parse_args()
 
     fields = [f.strip() for f in args.fields.split(",") if f.strip()]
-    translate_json(args.input, args.output, fields, jobs=args.jobs,
-                   translator=args.translator)
+    translate_json(
+        args.input, args.output, fields, jobs=args.jobs, translator=args.translator
+    )
 
 
 if __name__ == "__main__":
