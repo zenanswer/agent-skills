@@ -52,10 +52,19 @@ NPX = ["npx", "-y", "skills@latest"]
 FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---", re.S)
 HTTP_TIMEOUT = 20
 RESOLVE_TTL = 7 * 24 * 3600
-VENDOR_SKILLS = {
+# 厂商安装器会把同一技能写入多个 agent 目录（内容一致），这不属于「重复副本」。
+VENDOR_PREFIXES = {
     "officecli": "officecli skills install",
+    "morph-ppt": "officecli skills install",
     "browser-skill": "bsk update && bsk install-skill --all -y --force",
 }
+
+
+def vendor_refresh(name: str) -> str | None:
+    for prefix, command in VENDOR_PREFIXES.items():
+        if name == prefix or name.startswith(prefix + "-"):
+            return command
+    return None
 
 
 # ---------------------------------------------------------------- 基础工具
@@ -923,7 +932,7 @@ def build_scan(resolve: bool, refresh: bool, ls: dict[str, dict] | None = None) 
     # 预处理未登记技能：并行解析，避免逐个串行等网络
     pending = []
     for name in sorted(set(roots) - set(lock)):
-        if name in VENDOR_SKILLS:
+        if vendor_refresh(name):
             continue
         paths = roots[name]
         path = paths.get("agents") or paths[next(iter(paths))]
@@ -986,8 +995,9 @@ def build_scan(resolve: bool, refresh: bool, ls: dict[str, dict] | None = None) 
             )
             continue
 
-        if name in VENDOR_SKILLS:
-            buckets["vendor"].append({**base, "action": VENDOR_SKILLS[name]})
+        refresh = vendor_refresh(name)
+        if refresh:
+            buckets["vendor"].append({**base, "action": refresh})
             continue
 
         if len(set(reals.values())) > 1:
