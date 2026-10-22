@@ -159,7 +159,7 @@ def fetch_candidate(
     note = ""
 
     if variant == "mono":
-        recolor = color or brand_color
+        recolor = color or brand_color or candidate.get("default_color")
         if not recolor:
             raise ValueError(
                 "mono rendering needs a color: pass --color '#FFFFFF' "

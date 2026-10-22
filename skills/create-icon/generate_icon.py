@@ -35,7 +35,7 @@ import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
@@ -444,7 +444,7 @@ def main() -> int:
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest: dict = {
-        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),  # noqa: UP017
         "provider": cfg["provider"],
         "model": cfg["model"],
         "style": prompts[0]["style_key"],

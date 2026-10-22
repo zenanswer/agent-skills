@@ -8,6 +8,13 @@ description: "Generate consistent, slide-ready icons with a text-to-image model 
 Icons that survive being placed next to each other on a slide: same canvas,
 same padding, same visual weight, no white halo, no stretched artwork.
 
+## When NOT to use this
+
+If a stock icon would do (growth, team, shield, cost, 风险), use
+`icon-finder --mode ui` first: those sets are license-clear, free, crisp at any
+size, and consistent. Generate only when you need something custom, illustrated
+or 3D that no icon set has.
+
 ## What it guarantees
 
 - **Prompt is compiled, not concatenated** — four explicit blocks (subject,

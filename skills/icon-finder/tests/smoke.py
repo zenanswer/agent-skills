@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from logokit import normalize, render, sheet, sources, svg
+from logokit import catalog, normalize, render, sheet, sources, svg
 from PIL import Image
 
 PASS: list[str] = []
@@ -143,8 +143,115 @@ def test_sheet() -> None:
             check("sheet has 2 columns", im.width == 24 + 2 * (120 + 24), str(im.size))
 
 
+def test_catalog() -> None:
+    cat = catalog.catalog()
+    entries = cat["collections"]
+    defaults = catalog.ui_defaults()
+    check("curated catalog is non-empty", len(entries) >= 20, str(len(entries)))
+    check("ui defaults exist", all(p in entries for p in defaults), str(defaults))
+    check("ui defaults are six sets", len(defaults) == 6, str(len(defaults)))
+
+    bad_license = [p for p, m in entries.items() if not m.get("license")]
+    bad_url = [p for p, m in entries.items() if not m.get("license_url")]
+    check("every collection declares a license", not bad_license, str(bad_license[:3]))
+    check("every collection declares a license url", not bad_url, str(bad_url[:3]))
+
+    inconsistent = []
+    for prefix, meta in entries.items():
+        spdx = (meta.get("license") or "").upper()
+        expected = spdx.startswith("CC-BY")
+        if bool(meta.get("attribution_required")) != expected:
+            inconsistent.append(prefix)
+    check("attribution flags match licenses", not inconsistent, str(inconsistent[:4]))
+
+    check("resolve defaults (ui)", catalog.resolve_collections(None, "ui") == defaults)
+    check("resolve defaults (logo)", catalog.resolve_collections(None, "logo") == ["logos"])
+    all_open = catalog.resolve_collections("all-open", "ui")
+    check("all-open excludes brand sets", "logos" not in all_open and "tabler" in all_open,
+          str(len(all_open)))
+    check("unknown prefix is accepted with a warning", "my-custom-set" in catalog.resolve_collections("my-custom-set", "ui"))
+
+    bx = catalog.license_for("bx")
+    check("boxicons treated as CC BY (conservative)", bx["license"] == "CC-BY-4.0" and bx["attribution_required"])
+    tabler = catalog.license_for("tabler")
+    check("tabler is permissive", tabler["license"] == "MIT" and not tabler["attribution_required"])
+    unknown = catalog.license_for("nope", {"name": "Nope", "license": {"spdx": "CC-BY-4.0", "url": "u"}})
+    check("unknown prefix falls back to Iconify metadata", unknown["license"] == "CC-BY-4.0"
+          and unknown["attribution_required"] and unknown["license_source"] == "iconify")
+
+    check("family strips style suffixes", catalog.family_name("rocket-outline-rounded") == "rocket")
+    check("family strips numeric suffixes", catalog.family_name("trending-up-2") == "trending-up")
+    check("family keeps meaningful suffixes", catalog.family_name("shield-alert") == "shield-alert")
+    check("family keeps -off", catalog.family_name("wallet-off") == "wallet-off")
+
+    check("concept: cost saving", "piggy-bank" in catalog.concept_terms("cost saving"))
+    check("concept: Chinese 团队", "users" in catalog.concept_terms("团队"))
+    check("concept: plain name is not expanded", catalog.concept_terms("rocket") == [])
+
+    permissive = [{"license": "MIT", "attribution_required": False},
+                  {"license": "CC-BY-4.0", "attribution_required": True}]
+    check("license filter: permissive", len(catalog.filter_by_license(permissive, "permissive")) == 1)
+    check("license filter: attribution", len(catalog.filter_by_license(permissive, "attribution")) == 1)
+    check("license filter: any", len(catalog.filter_by_license(permissive, "any")) == 2)
+
+    credits = catalog.credits_markdown([
+        {"collection": "tabler", "collection_name": "Tabler Icons", "license": "MIT",
+         "license_url": "https://x", "attribution_required": False, "title": "Rocket"},
+        {"collection": "solar", "collection_name": "Solar", "license": "CC-BY-4.0",
+         "license_url": "https://y", "attribution_required": True, "title": "Star"},
+    ])
+    check("credits table written", "| Tabler Icons | MIT | not required |" in credits)
+    check("credits attribution section", "Attribution required" in credits and "Solar" in credits)
+
+
+def _fake_ui(prefix: str, name: str, score: int = 100) -> dict:
+    return {
+        "source": "iconify",
+        "id": f"iconify:{prefix}:{name}",
+        "title": sources.prettify(name),
+        "is_color": False,
+        "brand_color": None,
+        "variants": ["mono"],
+        "preview_url": "",
+        "score": score,
+        "confidence": 1.0,
+        "meta": {"collection": prefix, "name": name},
+        "ui_family": catalog.family_name(name),
+        "collection": prefix,
+        "license": "MIT",
+        "attribution_required": False,
+    }
+
+
+def test_ui_mode() -> None:
+    single = sources._iconify_params("rocket", ["tabler"], 10)
+    check("single collection uses prefix", single.get("prefix") == "tabler" and "prefixes" not in single)
+    multi = sources._iconify_params("rocket", ["tabler", "lucide"], 10)
+    check("multi collection uses prefixes", multi.get("prefixes") == "tabler,lucide" and "prefix" not in multi)
+    check("api limit floored at 32", multi["limit"] == "32")
+
+    pool = [
+        _fake_ui("material-symbols", "rocket"),
+        _fake_ui("tabler", "rocket"),
+        _fake_ui("tabler", "rocket-outline"),
+        _fake_ui("lucide", "rocket"),
+        _fake_ui("tabler", "rocket-off"),
+    ]
+    ranked = sources.dedupe_and_rank(pool, style="mono", mode="ui")
+    names = [c["meta"]["name"] for c in ranked]
+    check("ui dedupe collapses style variants", names == ["rocket", "rocket-off"], str(names))
+    check("ui keeps one representative per family", len(ranked) == 2)
+
+    ui_like = sources.resolve_ref("iconify:tabler:rocket")
+    check("ui ref gets a default color", ui_like.get("default_color") == "#111111")
+    check("ui ref is mono", ui_like["is_color"] is False and "mono" in ui_like["variants"])
+    logo = sources.resolve_ref("iconify:logos:aws")
+    check("logo ref stays colored", logo["is_color"] is True and logo.get("license") == "CC0-1.0")
+
+
 def main() -> int:
-    for fn in (test_sources, test_svg, test_render, test_normalize, test_sheet):
+    for fn in (test_sources, test_svg, test_render, test_normalize, test_sheet,
+               test_catalog, test_ui_mode):
         print(f"\n== {fn.__name__}")
         fn()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")

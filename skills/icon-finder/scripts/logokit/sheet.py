@@ -178,8 +178,10 @@ def sheet_from_candidates(
 
     items = []
     for cand, img in zip(candidates, images):
-        tags = cand["source"]
-        if cand.get("brand_color"):
+        tags = cand.get("collection_name") or cand.get("collection") or cand["source"]
+        if cand.get("attribution_required") and cand.get("license"):
+            tags += f" · {cand['license']}"
+        elif not cand.get("collection") and cand.get("brand_color"):
             tags += f" {cand['brand_color']}"
         items.append({"image": img, "label": cand["title"], "sub": tags})
     return make_sheet(items, out_path, cell=size, theme=theme, title=title)

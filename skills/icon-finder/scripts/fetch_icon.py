@@ -17,6 +17,8 @@ Each ref produces:
 Usage:
   uv run scripts/fetch_icon.py "iconify:logos:aws"
   uv run scripts/fetch_icon.py aws kubernetes react --out ./logos --sizes 1024,512
+  uv run scripts/fetch_icon.py --mode ui rocket users piggy-bank
+  uv run scripts/fetch_icon.py --mode ui "cost saving" --credits CREDITS.md
   uv run scripts/fetch_icon.py "svgl:openai" --variant dark
   uv run scripts/fetch_icon.py "iconify:logos:aws" --style mono --color "#FFFFFF"
   uv run scripts/fetch_icon.py aws k8s --manifest logos.json --sheet preview.png
@@ -26,13 +28,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from logokit import net, normalize, render, sources
+from logokit import catalog, net, normalize, render, sources
 from logokit import svg as svgmod
 from logokit.sheet import make_sheet
 
@@ -94,6 +97,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Keep the source whitespace instead of trimming",
     )
+    ap.add_argument("--mode", choices=["logo", "ui"], default="logo",
+                    help="logo: brand marks; ui: concept icons (default logo)")
+    ap.add_argument("--collection", default=None,
+                    help="Iconify prefix(es) for --mode ui, comma separated, or 'all-open'")
+    ap.add_argument("--credits", help="Write an attribution/credits Markdown file")
     ap.add_argument("--svg-only", action="store_true", help="Only write SVG")
     ap.add_argument("--png-only", action="store_true", help="Only write PNG")
     ap.add_argument("--sheet", help="Write a contact sheet of the fetched logos")
@@ -129,6 +137,9 @@ def main() -> int:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     session = net.session()
+    collections = catalog.resolve_collections(args.collection, args.mode)
+    if args.mode == "ui":
+        print(f"[info] ui mode: {', '.join(collections)}", file=sys.stderr)
 
     entries: list[dict] = []
     failures: list[dict] = []
@@ -136,7 +147,9 @@ def main() -> int:
 
     for ref in args.refs:
         try:
-            candidate = sources.resolve_ref(ref, session, prefer_variant=variant)
+            candidate = sources.resolve_ref(
+                ref, session, prefer_variant=variant, mode=args.mode, collections=collections
+            )
             fetched = svgmod.fetch_candidate(
                 candidate, variant=variant, color=args.color, sess=session
             )
@@ -145,8 +158,14 @@ def main() -> int:
 
             if candidate.get("auto_resolved"):
                 # `fetch_icon.py aws` should produce aws.png, not the source's
-                # long official title.
-                base = sources.safe_name(ref)
+                # long official title - but a Chinese concept has no ASCII slug,
+                # so fall back to the resolved English icon name.
+                if re.search(r"[A-Za-z0-9]", ref):
+                    base = sources.safe_name(ref)
+                else:
+                    base = sources.safe_name(
+                        candidate["meta"].get("name") or candidate["title"]
+                    )
             else:
                 base = sources.safe_name(
                     candidate["title"] or candidate["meta"].get("name", "logo")
@@ -187,6 +206,11 @@ def main() -> int:
                 "title": candidate["title"],
                 "source": candidate["source"],
                 "variant": variant,
+                "collection": candidate.get("collection"),
+                "collection_name": candidate.get("collection_name"),
+                "license": candidate.get("license"),
+                "license_url": candidate.get("license_url"),
+                "attribution_required": candidate.get("attribution_required", False),
                 "native_variant": fetched["native_variant"],
                 "recolored": fetched["recolored"],
                 "brand_color": fetched["brand_color"],
@@ -212,8 +236,9 @@ def main() -> int:
                 {
                     "image": Path(e["png"][0]) if e["png"] else None,
                     "label": e["title"],
-                    "sub": e["source"]
-                    + (f" {e['variant']}" if e["variant"] != "color" else ""),
+                    "sub": (e.get("collection_name") or e["source"])
+                    + (f" · {e['variant']}"
+                       if e["variant"] not in {"color", "auto"} else ""),
                 }
                 for e in entries
             ]
@@ -222,18 +247,20 @@ def main() -> int:
                 args.sheet,
                 cell=220,
                 theme=args.sheet_theme,
-                title="Fetched logos",
+                title="Fetched icons" if args.mode == "ui" else "Fetched logos",
             )
             print(f"[info] contact sheet: {sheet_path.resolve()}", file=sys.stderr)
         except Exception as exc:  # noqa: BLE001
             print(f"[warn] could not draw contact sheet: {exc}", file=sys.stderr)
 
     manifest = {
-        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),  # noqa: UP017
         "output_dir": str(out_dir.resolve()),
         "sizes": list(sizes),
         "padding": args.padding,
         "variant": variant,
+        "mode": args.mode,
+        "collections": list(collections),
         "renderer": render.renderer_name(),
         "logos": entries,
         "failures": failures,
@@ -255,6 +282,12 @@ def main() -> int:
         json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     print(f"[info] manifest: {manifest_path.resolve()}", file=sys.stderr)
+
+    if args.credits:
+        credits_path = Path(args.credits)
+        credits_path.parent.mkdir(parents=True, exist_ok=True)
+        credits_path.write_text(catalog.credits_markdown(manifest["logos"]), encoding="utf-8")
+        print(f"[info] credits: {credits_path.resolve()}", file=sys.stderr)
 
     if args.json:
         print(json.dumps(manifest, indent=2, ensure_ascii=False))

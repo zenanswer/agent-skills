@@ -36,7 +36,7 @@ from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from . import cache, net
+from . import cache, catalog, net
 
 ICONIFY_SEARCH_URL = "https://api.iconify.design/search"
 ICONIFY_SVG_URL = "https://api.iconify.design/{collection}/{name}.svg"
@@ -387,54 +387,113 @@ def _candidate(
 # --------------------------------------------------------------------------- #
 
 
+def _iconify_params(query: str, collections: Iterable[str], limit: int) -> dict[str, str]:
+    """Build the /search query. Iconify uses `prefix` (one) or `prefixes` (many)."""
+    prefixes = [c for c in collections if c]
+    params = {"query": query, "limit": str(max(limit, 32))}
+    if len(prefixes) == 1:
+        params["prefix"] = prefixes[0]
+    else:
+        params["prefixes"] = ",".join(prefixes)
+    return params
+
+
 def search_iconify(
     query: str,
     limit: int = 10,
     collections: Iterable[str] = DEFAULT_COLLECTIONS,
     sess=None,
 ) -> list[dict[str, Any]]:
-    collections = tuple(c for c in collections if c)
-    if not collections:
+    """Search one or more Iconify collections in a single request.
+
+    Works for brand logos (`logos`) and for UI sets (`mdi`, `tabler`, ...).
+    License metadata is attached per collection.
+    """
+    prefixes = [c for c in collections if c]
+    if not prefixes:
         return []
     s = sess or net.session()
+    try:
+        resp = s.get(ICONIFY_SEARCH_URL, params=_iconify_params(query, prefixes, limit), timeout=30)
+        resp.raise_for_status()
+        payload = resp.json()
+        icons = payload.get("icons", []) or []
+        api_collections = payload.get("collections") or {}
+    except Exception as exc:  # noqa: BLE001 - a failed search should not kill the CLI
+        print(f"[warn] Iconify search failed: {exc}", file=sys.stderr)
+        return []
+
     out: list[dict[str, Any]] = []
-    for collection in collections:
-        try:
-            resp = s.get(
-                ICONIFY_SEARCH_URL,
-                params={
-                    "query": query,
-                    "prefix": collection,
-                    "limit": str(max(limit, 1)),
+    for rank, icon_id in enumerate(icons[:limit]):
+        if ":" in icon_id:
+            coll, name = icon_id.split(":", 1)
+        else:
+            coll, name = prefixes[0], icon_id
+        score = max(name_score(query, name), name_score(query, f"{coll} {name}"))
+        score = max(score, max(0, 60 - rank))
+        meta = catalog.collection(coll)
+        ui_like = bool(meta and meta.get("category") in {"ui", "emoji"})
+        lic = catalog.license_for(coll, api_collections.get(coll))
+        out.append(
+            _candidate(
+                "iconify",
+                f"iconify:{coll}:{name}",
+                prettify(name),
+                is_color=not ui_like,
+                variants=["mono"] if ui_like else ["color"],
+                preview_url=ICONIFY_SVG_URL.format(collection=coll, name=name),
+                score=score,
+                meta={"collection": coll, "name": name},
+                extra={
+                    **{k: lic[k] for k in ("license", "license_url", "attribution_required")},
+                    "collection": coll,
+                    "collection_name": lic["collection_name"],
+                    "author": lic.get("author"),
+                    "default_color": "#111111" if ui_like else None,
                 },
-                timeout=30,
             )
-            resp.raise_for_status()
-            icons = resp.json().get("icons", []) or []
-        except Exception as exc:  # noqa: BLE001 - one bad collection must not kill the search
-            print(
-                f"[warn] Iconify '{collection}' search failed: {exc}", file=sys.stderr
-            )
-            continue
-        for rank, icon_id in enumerate(icons[:limit]):
-            if ":" in icon_id:
-                coll, name = icon_id.split(":", 1)
-            else:
-                coll, name = collection, icon_id
-            score = max(name_score(query, name), name_score(query, f"{coll} {name}"))
-            score = max(score, max(0, 60 - rank))
-            out.append(
-                _candidate(
-                    "iconify",
-                    f"iconify:{coll}:{name}",
-                    prettify(name),
-                    is_color=True,
-                    preview_url=ICONIFY_SVG_URL.format(collection=coll, name=name),
-                    score=score,
-                    meta={"collection": coll, "name": name},
-                )
-            )
+        )
     return out
+
+
+def search_ui(
+    query: str,
+    *,
+    collections: Iterable[str] | None = None,
+    limit: int = 12,
+    sess=None,
+) -> list[dict[str, Any]]:
+    """Concept-aware search across UI icon sets.
+
+    Iconify matches names, so a deck concept ("cost saving", "省钱") is first
+    expanded into names that exist ("piggy-bank", "wallet", ...).
+    """
+    prefixes = list(collections) if collections else catalog.ui_defaults()
+    terms = catalog.concept_terms(query)
+    if not terms:
+        terms = [query]
+
+    pool: list[dict[str, Any]] = []
+    wants_off = "off" in normalize(query) or "关闭" in query
+    for term_index, term in enumerate(terms):
+        for cand in search_iconify(term, limit=32, collections=prefixes, sess=sess):
+            # "-off" icons are negation states ("wallet off"), rarely what a deck wants.
+            if not wants_off and (cand["meta"].get("name") or "").endswith("-off"):
+                continue
+            # Earlier synonym entries are more relevant; every entry is at least
+            # a legitimate name match, so keep a decent floor.
+            cand["score"] = max(cand["score"] - term_index * 2, 60)
+            cand["matched_term"] = term
+            cand["ui_family"] = catalog.family_name(cand["meta"]["name"])
+            pool.append(cand)
+    ranked = dedupe_and_rank(pool, style="mono", mode="ui")
+    families: dict[str, set[str]] = {}
+    for cand in pool:
+        families.setdefault(cand.get("ui_family", ""), set()).add(cand.get("collection", ""))
+    for cand in ranked:
+        others = sorted(families.get(cand.get("ui_family", ""), set()) - {cand.get("collection", "")})
+        cand["also_in"] = others
+    return ranked[:limit]
 
 
 def _simpleicons_index(sess=None) -> list[dict[str, Any]]:
@@ -615,23 +674,33 @@ def dedupe_key(cand: dict[str, Any]) -> str:
     return normalize(cand["title"]) + ("|mono" if mono else "|color")
 
 
-def _dedupe(candidates: list[dict[str, Any]], show_all: bool) -> list[dict[str, Any]]:
+def _dedupe(
+    candidates: list[dict[str, Any]], show_all: bool, mode: str = "logo"
+) -> list[dict[str, Any]]:
     if show_all:
         return candidates
     best: dict[str, dict[str, Any]] = {}
     for cand in candidates:
-        key = dedupe_key(cand)
+        if mode == "ui":
+            key = (cand.get("ui_family") or cand["meta"].get("name") or cand["title"]) + "|mono"
+        else:
+            key = dedupe_key(cand)
         current = best.get(key)
         if current is None:
             best[key] = cand
             continue
+        def name_len(c: dict[str, Any]) -> int:
+            return len((c.get("meta") or {}).get("name", ""))
+
         better = (
             cand["score"],
             -SOURCE_PRIORITY.get(cand["source"], 9),
+            -name_len(cand),
             -len(cand["title"]),
         ) > (
             current["score"],
             -SOURCE_PRIORITY.get(current["source"], 9),
+            -name_len(current),
             -len(current["title"]),
         )
         if better:
@@ -647,9 +716,14 @@ def search_all(
     sources: Iterable[str] = ("iconify", "svgl", "lobeicons", "simpleicons"),
     style: str = "color",
     show_all: bool = False,
+    mode: str = "logo",
     sess=None,
 ) -> list[dict[str, Any]]:
     """Run every requested source concurrently and return a stable ranking."""
+    if mode == "ui":
+        # UI mode is Iconify-only: one API, license metadata, deterministic.
+        return search_ui(query, collections=collections, limit=limit or 12, sess=sess)
+
     wanted = [s for s in sources if s]
     jobs = {
         "iconify": lambda: search_iconify(query, limit, collections, sess),
@@ -673,15 +747,19 @@ def search_all(
     return dedupe_and_rank(merged, style=style, show_all=show_all)
 
 
-def _sort_key(style: str):
+def _sort_key(style: str, mode: str = "logo"):
     def key(c: dict[str, Any]):
         if style == "color":
             color_first = 0 if c["is_color"] else 1
         else:
             color_first = 0 if (not c["is_color"] or "mono" in c["variants"]) else 1
+        # In UI mode prefer canonical short names over variant suffixes:
+        # "rocket" beats "rocket-launch-outline-rounded".
+        name_len = len((c.get("meta") or {}).get("name", "")) if mode == "ui" else 0
         return (
             -c["score"],
             color_first,
+            name_len,
             SOURCE_PRIORITY.get(c["source"], 9),
             c["title"].lower(),
         )
@@ -694,13 +772,20 @@ def dedupe_and_rank(
     *,
     style: str = "color",
     show_all: bool = False,
+    mode: str = "logo",
 ) -> list[dict[str, Any]]:
-    merged = _dedupe(candidates, show_all)
-    merged.sort(key=_sort_key(style))
+    merged = _dedupe(candidates, show_all, mode=mode)
+    merged.sort(key=_sort_key(style, mode))
     return merged
 
 
-def resolve_ref(ref: str, sess=None, prefer_variant: str | None = None) -> dict[str, Any]:
+def resolve_ref(
+    ref: str,
+    sess=None,
+    prefer_variant: str | None = None,
+    mode: str = "logo",
+    collections: Iterable[str] | None = None,
+) -> dict[str, Any]:
     """Turn a fetch reference into a candidate dict (no search needed).
 
     Accepted forms:
@@ -747,13 +832,24 @@ def resolve_ref(ref: str, sess=None, prefer_variant: str | None = None) -> dict[
             collection, name = rest.split("/", 1)
         else:
             collection, name = "logos", rest
+        meta = catalog.collection(collection)
+        ui_like = bool(meta and meta.get("category") in {"ui", "emoji"})
+        lic = catalog.license_for(collection)
         return _candidate(
             "iconify",
             f"iconify:{collection}:{name}",
             prettify(name),
-            is_color=True,
+            is_color=not ui_like,
+            variants=["mono"] if ui_like else ["color"],
             preview_url=ICONIFY_SVG_URL.format(collection=collection, name=name),
             meta={"collection": collection, "name": name},
+            extra={
+                **{k: lic[k] for k in ("license", "license_url", "attribution_required")},
+                "collection": collection,
+                "collection_name": lic["collection_name"],
+                "author": lic.get("author"),
+                "default_color": "#111111" if ui_like else None,
+            },
         )
 
     if source == "simpleicons":
@@ -823,12 +919,21 @@ def resolve_ref(ref: str, sess=None, prefer_variant: str | None = None) -> dict[
     if ref.lower().endswith(".svg"):
         return resolve_ref(f"url:{ref}", sess)
     expanded, _note = expand_query(ref)
-    queries = [ref] if normalize(expanded) == normalize(ref) else [ref, expanded]
+    queries = [ref] if mode == "ui" or normalize(expanded) == normalize(ref) else [ref, expanded]
     found: list[dict[str, Any]] = []
     try:
         for query in queries:
-            found.extend(search_all(query, limit=8, style="color", sess=sess))
-        found = dedupe_and_rank(found, style="color")
+            found.extend(
+                search_all(
+                    query,
+                    limit=8,
+                    style="mono" if mode == "ui" else "color",
+                    mode=mode,
+                    collections=collections if collections is not None else ("logos" if mode == "logo" else catalog.ui_defaults()),
+                    sess=sess,
+                )
+            )
+        found = dedupe_and_rank(found, style="mono" if mode == "ui" else "color", mode=mode)
     except Exception:  # noqa: BLE001 - offline fallback below
         found = []
     if prefer_variant in {"dark", "light", "wordmark", "mono"}:
