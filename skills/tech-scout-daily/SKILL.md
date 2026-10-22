@@ -10,6 +10,18 @@ description: >
 
 本 Skill 从多个权威 AI 信息源聚合每日最新资讯，生成结构化的技术侦察报纸。报纸包含一级索引（按来源）和二级索引（按公司/机构/人物），每篇资讯附带标题、大致内容、技术价值评分、商用价值评分。
 
+## 运行前提
+
+| 类别 | 依赖 | 不满足时 |
+|---|---|---|
+| 必需 | Python 3.10+、`requests`、`beautifulsoup4`、`deep-translator` | 无法运行 |
+| **全量源必需** | **crawl4ai 服务**（`CRAWL4AI_URL` + Bearer token） | 只能拿到 3/7 源（HF ×2、Google 拿不到），仍能出报 |
+| 推荐 | LLM 翻译（`LLM_API_URL` / `LLM_MODEL_NAME` / `LLM_API_KEY`） | 退回 Google 翻译，慢且可能限流 |
+| 可选 | Playwright + chromium | 仅少一个本地浏览器兜底，不影响 crawl4ai 路径 |
+
+配置放在 `~/.config/tech-scout-daily/env`（`chmod 600`），模板见技能根目录 `.env.example`。
+**不要把 token / key 提交到仓库**；技能目录会被 `npx skills update` 覆盖。
+
 ## 信息源
 
 | 编号 | 来源 | URL | 类型 |
@@ -17,9 +29,9 @@ description: >
 | 1 | HuggingFace Daily Papers | https://huggingface.co/api/daily_papers | 学术论文 |
 | 2 | HuggingFace Trending Papers | https://huggingface.co/papers/trending | 热门论文 |
 | 3 | LLM Stats News | https://llm-stats.com/ai-news | 模型/产业新闻 |
-| 4 | AI News (artificialintelligence-news.com) | https://www.artificialintelligence-news.com/ | 产业新闻 |
+| 4 | The Decoder | https://the-decoder.com/feed/ | 产业新闻（RSS） |
 | 5 | MIT AI News | https://news.mit.edu/topic/artificial-intelligence2 | 学术/研究 |
-| 6 | Google AI Blog | https://blog.google/technology/ai/ | 企业研究 |
+| 6 | Google AI Blog | https://blog.google/innovation-and-ai/technology/ai/rss/ | 企业研究（RSS） |
 | 7 | GitHub Trending | https://github.com/trending | 开源项目 |
 
 ## 抓取后端
@@ -32,17 +44,18 @@ description: >
 | `requests` | 只用本地 HTTP（快，但受 DNS/反爬限制） |
 | `crawl4ai` | 全部走 crawl4ai 服务，一次 POST 批量抓 6 个源（约 10s） |
 
-### crawl4ai 配置（推荐）
+### crawl4ai 配置（全量源必需）
 
-crawl4ai 服务在远端完成 JS 渲染、反爬与出口网络，能解决本机 DNS 污染/SSL EOF 问题：
+crawl4ai 服务在远端完成 JS 渲染、反爬与出口网络，能解决本机 DNS 污染/SSL EOF 问题。
+不配置它时只能拿到 3/7 源；配置后 **7/7**（原 AI News 被 captcha 永久拦截，已换成 The Decoder RSS）。
 
 ```bash
 # ~/.config/tech-scout-daily/env（chmod 600）
-CRAWL4AI_URL=http://10.10.11.7:11235
+CRAWL4AI_URL=http://<your-crawl4ai-host>:11235
 CRAWL4AI_TOKEN=<bearer token>
 
 # 可选：LLM 批量翻译（不配则退回 Google，慢且容易被限流）
-LLM_API_URL=https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+LLM_API_URL=https://your-openai-compatible-endpoint/v1
 LLM_MODEL_NAME=qwen3.7-plus
 LLM_API_KEY=sk-...
 # 翻译单独用快模型（实测 138 条约 1.5 分钟；用 3.7-plus 会到 10 分钟以上）
@@ -51,7 +64,23 @@ TRANSLATE_LLM_MODEL=qwen3.6-flash
 
 ```bash
 python scripts/run.py --fetcher crawl4ai --output-dir ./daily
+
+# 只检查源可达性（不出报纸，适合排障/定时巡检）
+python scripts/run.py --fetcher crawl4ai --health
 ```
+
+**降级行为**：
+
+| 情况 | 结果 |
+|---|---|
+| `--fetcher auto`（默认）+ crawl4ai 可用 | requests 失败后自动走 crawl4ai，6–7 源 |
+| 不配 crawl4ai | 仅 3/7 源（LLM Stats、MIT、GitHub） |
+| crawl4ai 服务挂 / token 失效 | `auto` 降到 3/7；`--fetcher crawl4ai` 默认再回退 requests（`--strict` 可关闭） |
+| 所有源都失败 | run.py 立即报错退出（退出码 2），列出失败源与排查建议 |
+| LLM 翻译失败 | 单批回退 Google；仍失败则保留英文，不中断 |
+
+crawl4ai 抓到的 HTML 会按天缓存到 `~/.cache/tech-scout-daily/<date>/`，
+同一天重跑翻译/生成不必重抓；`TECH_SCOUT_REFRESH=1` 强制刷新。
 
 实测（本机网络）：
 
@@ -62,9 +91,9 @@ python scripts/run.py --fetcher crawl4ai --output-dir ./daily
 | MIT News | ✅ | ✅ 30 篇 |
 | Google AI Blog | ❌ SSL EOF | ✅ 20 篇（改用 RSS） |
 | GitHub Trending | ✅ | ✅ 11 篇 |
-| AI News | ❌ 403 | ❌ SG captcha（页面和 RSS 都被挡） |
+| The Decoder | ❌ 需代理 | ✅ 10 篇（RSS） |
 
-crawl4ai 模式下总量约 130–140 篇；`--fetcher crawl4ai` 全程约 2 分钟
+crawl4ai 模式下总量约 140–160 篇（实测 147）；`--fetcher crawl4ai` 全程约 2 分钟
 （抓取 ~10s + LLM 翻译 ~90s + 生成 ~10s）。
 
 ### 其他说明
@@ -88,14 +117,16 @@ python scripts/run.py
 - `--format`：输出格式，`md` / `html` / `both`（默认 `md`）
 - `--insecure-ssl`：跳过 SSL 校验（用于受限网络环境）
 - `--proxy <url>`：HTTP 代理（如 `http://<host>:<port>`），用于解决 HuggingFace 等不可直连的源
-- `--ask-on-failure`：抓取后若仍有源失败，交互式询问是否提供代理 URL（推荐）
 - `--fetcher`：`auto` / `requests` / `crawl4ai`（推荐 `crawl4ai`，见上节）
-- `--use-playwright`：用 Playwright 浏览器作为所有源的 fetcher（绕过 anti-bot）
-- `--playwright-only-failures`：先用 requests 抓取，失败的源再用 Playwright 重试（推荐）
+- `--strict`：`crawl4ai` 失败时不回退 requests（默认会部分降级）
+- `--health`：只做源连通性检查，不出报纸
+- `--ask-on-failure`：抓取后仍有源失败时，交互式询问是否提供代理 URL（仅 requests 路径有意义）
+- `--use-playwright` / `--playwright-only-failures`：可选的本地浏览器兜底（需额外安装），与 crawl4ai 模式互斥，一般不必要
 - `--no-translate`：跳过翻译步骤（仅英文）
 - `--no-print`：不打印报纸内容到 stdout（仅生成文件）
 
-> 推荐组合：`--playwright-only-failures --ask-on-failure --format both`
+> 推荐组合：`--fetcher crawl4ai --output-dir ./daily --format both`
+> 本地没有 crawl4ai 时：`--fetcher auto --proxy "$HTTPS_PROXY"`
 
 ### 失败时询问代理（推荐）
 
@@ -379,28 +410,35 @@ python scripts/generate_daily.py --input /tmp/tech_scout_translated.json --outpu
 ## 依赖安装
 
 ```bash
+# 必需（crawl4ai 通过 HTTP 调用，不需要装 Python 包）
 pip install -r scripts/requirements.txt
 
-# Playwright 还需要下载浏览器内核
+# 可选：仅当需要本地浏览器兜底
+pip install -r scripts/requirements-optional.txt
 python -m playwright install chromium
-```
-
-如果使用代理且在内核受限环境，可以只安装 requests + beautifulsoup4：
-
-```bash
-pip install requests beautifulsoup4 deep-translator
 ```
 
 ## 常见问题
 
-**Q: HuggingFace 抓不到？**
-A: 加 `--ask-on-failure`，脚本会询问是否提供代理 URL。直接传：`--proxy http://<host>:<port>` 或环境变量 `HTTPS_PROXY=http://<host>:<port>`
+**Q: HuggingFace / Google 抓不到？**
+A: 本机网络对这两个域名有 DNS/SSL 问题。优先配 crawl4ai（`CRAWL4AI_URL` + `CRAWL4AI_TOKEN`）；
+  否则用 `--proxy` / `HTTPS_PROXY`，或 `--health` 先确认哪些源可达。
 
-**Q: AI News 一直 403？**
-A: 该站用 Cloudflare/WAF 限制部分地区 IP，无法绕开。脚本会自动跳过并在报告中标注"未获取"。
+**Q: 不配 crawl4ai 能用吗？**
+A: 能，但只有 3/7 源（LLM Stats、MIT、GitHub），HF 和 Google 会缺失；报告里会标「未获取」。
+
+**Q: crawl4ai 调不通 / 401？**
+A: `--health` 会给出每个源的状态；401/403 表示 `CRAWL4AI_TOKEN` 失效。
+   `--fetcher crawl4ai` 默认会回退 requests（部分降级），`--strict` 可关闭回退。
 
 **Q: 翻译失败 / 很慢？**
-A: `deep-translator` 调用 Google Translate 免费接口。如被限速，加 `--no-translate` 跳过；或配置 `TECH_SCOUT_INSECURE_SSL=1`。
+A: 默认有 LLM 配置就用 LLM 批量翻译，否则用 Google。
+   - 慢：确认 `TRANSLATE_LLM_MODEL` 是 flash 级模型（如 `qwen3.6-flash`），并确保 `enable_thinking` 生效
+   - 被限流：`--no-translate` 跳过，或稍后重跑（crawl4ai 的 HTML 有当天缓存，不会重抓）
 
-**Q: 我想换翻译源（不用 Google）？**
-A: 修改 `scripts/translate.py` 中的 GoogleTranslator 为其他 backend（`deep-translator` 支持 DeepL、Microsoft、Baidu 等）。
+**Q: 想换翻译方式？**
+A: `translate.py --translator auto|llm|google`；LLM 走任意 OpenAI 兼容端点，Google 走 `deep-translator`。
+
+**Q: 每次都重新抓一遍？**
+A: 不会。crawl4ai 返回的 HTML 按天缓存在 `~/.cache/tech-scout-daily/<date>/`，
+   同一天重跑只重做翻译/生成；`TECH_SCOUT_REFRESH=1` 可强制刷新。

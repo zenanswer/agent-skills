@@ -9,6 +9,7 @@ Supports two fetch modes:
 """
 
 import argparse
+import hashlib
 import html as html_lib
 import json
 import os
@@ -75,7 +76,9 @@ _load_env_file()
 CRAWL4AI_URL = os.environ.get("CRAWL4AI_URL", "").rstrip("/")
 CRAWL4AI_TOKEN = os.environ.get("CRAWL4AI_TOKEN", "")
 _FETCHER = "auto"            # auto | requests | crawl4ai
+_STRICT = False
 _C4A_CACHE: dict[str, str] = {}
+_C4A_DISK_CACHE = Path.home() / ".cache" / "tech-scout-daily" / datetime.now().strftime("%Y-%m-%d")
 
 SESSION = requests.Session()
 SESSION.headers.update(HEADERS)
@@ -164,29 +167,85 @@ def _playwright_get(url: str, wait_selector: Optional[str] = None, wait_ms: int 
         return None
 
 
+def _c4a_disk_path(url: str) -> Path:
+    return _C4A_DISK_CACHE / (hashlib.sha1(url.encode()).hexdigest() + ".html")
+
+
+def _c4a_disk_get(url: str) -> Optional[str]:
+    if os.environ.get("TECH_SCOUT_REFRESH") == "1":
+        return None
+    path = _c4a_disk_path(url)
+    try:
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+    except OSError:
+        return None
+
+
+def _c4a_disk_put(url: str, html: str) -> None:
+    path = _c4a_disk_path(url)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(html, encoding="utf-8")
+        (path.parent / "index.tsv").open("a", encoding="utf-8").write(f"{path.name}\t{url}\n")
+    except OSError:
+        pass
+
+
 def _crawl4ai_batch(urls: list[str]) -> dict[str, str]:
-    """一次 POST /crawl 抓多个 URL，返回 {url: html}。未配置时返回空。"""
+    """一次 POST /crawl 抓多个 URL，返回 {url: html}。
+
+    - 当天缓存命中则直接复用（TECH_SCOUT_REFRESH=1 可强制刷新）
+    - 网络抖动重试 1 次；401/403 明确提示 token 失效
+    """
+    urls = [u for u in urls if u]
+    out: dict[str, str] = {}
+    pending: list[str] = []
+    for url in urls:
+        cached = _C4A_CACHE.get(url) or _c4a_disk_get(url)
+        if cached:
+            out[url] = cached
+        else:
+            pending.append(url)
+    if not pending:
+        return out
     if not (CRAWL4AI_URL and CRAWL4AI_TOKEN):
-        return {}
-    payload = {"urls": list(urls), "crawler_config": {"cache_mode": "BYPASS"}}
+        print("  [WARN] 未配置 CRAWL4AI_URL / CRAWL4AI_TOKEN，跳过 crawl4ai", file=sys.stderr)
+        return out
+
+    payload = {"urls": pending, "crawler_config": {"cache_mode": "BYPASS"}}
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {CRAWL4AI_TOKEN}",
     }
-    try:
-        resp = requests.post(
-            f"{CRAWL4AI_URL}/crawl", json=payload, headers=headers,
-            timeout=max(120, REQUEST_TIMEOUT * len(urls)),
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:
-        print(f"  [WARN] crawl4ai 请求失败: {e}", file=sys.stderr)
-        return {}
-    out: dict[str, str] = {}
+    data = None
+    for attempt in range(2):
+        try:
+            resp = requests.post(
+                f"{CRAWL4AI_URL}/crawl", json=payload, headers=headers,
+                timeout=max(120, REQUEST_TIMEOUT * len(pending)),
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            break
+        except requests.HTTPError as e:
+            status = getattr(e.response, "status_code", None)
+            if status in (401, 403):
+                print(f"  [ERROR] crawl4ai 鉴权失败（HTTP {status}）：CRAWL4AI_TOKEN 可能已失效",
+                      file=sys.stderr)
+                return out
+            print(f"  [WARN] crawl4ai 请求失败（尝试 {attempt + 1}/2）: {e}", file=sys.stderr)
+        except Exception as e:
+            print(f"  [WARN] crawl4ai 请求失败（尝试 {attempt + 1}/2）: {e}", file=sys.stderr)
+        if attempt == 0:
+            time.sleep(2)
+    if data is None:
+        return out
+
     for result in data.get("results") or []:
         if result.get("success") and result.get("html"):
-            out[result["url"]] = result["html"]
+            url = result["url"]
+            out[url] = result["html"]
+            _c4a_disk_put(url, result["html"])
     _C4A_CACHE.update(out)
     return out
 
@@ -210,8 +269,23 @@ def _fetch_html(url: str, wait_selector: Optional[str] = None, wait_ms: int = 20
     """统一抓取：requests → crawl4ai → Playwright（可选）。"""
     if _USE_PLAYWRIGHT:
         return _playwright_get(url, wait_selector, wait_ms)
+
+    # 同一天的 crawl4ai 缓存优先（requests 模式除外）
+    if _FETCHER in ("auto", "crawl4ai"):
+        cached = _C4A_CACHE.get(url) or _c4a_disk_get(url)
+        if cached:
+            _C4A_CACHE[url] = cached
+            return cached
+
     if _FETCHER == "crawl4ai":
-        return _crawl4ai_html(url)
+        cached = _crawl4ai_html(url)
+        if cached:
+            return cached
+        if _STRICT:
+            return None
+        print(f"  [fallback] crawl4ai 未取到，改用 requests: {url}", file=sys.stderr)
+        resp = _safe_get(url)
+        return resp.text if resp is not None else None
 
     resp = _safe_get(url)
     if resp is not None:
@@ -230,7 +304,25 @@ def _fetch_html(url: str, wait_selector: Optional[str] = None, wait_ms: int = 20
 
 
 def _fetch_json(url: str) -> Optional[dict]:
-    """Fetch JSON：requests 优先，失败后用 crawl4ai 的 <pre> 内容。"""
+    """Fetch JSON：缓存优先 → requests → crawl4ai 的 <pre> 内容。"""
+    if _FETCHER in ("auto", "crawl4ai"):
+        cached = _C4A_CACHE.get(url) or _c4a_disk_get(url)
+        if cached:
+            _C4A_CACHE[url] = cached
+            try:
+                return json.loads(_unwrap_pre(cached))
+            except Exception as e:
+                print(f"  [WARN] 缓存 JSON 解析失败 {url}: {e}", file=sys.stderr)
+        if _FETCHER == "crawl4ai":
+            fetched = _crawl4ai_html(url)
+            if fetched:
+                try:
+                    return json.loads(_unwrap_pre(fetched))
+                except Exception as e:
+                    print(f"  [WARN] crawl4ai JSON parse failed for {url}: {e}", file=sys.stderr)
+            if _STRICT:
+                return None
+
     resp = _safe_get(url)
     if resp is not None:
         try:
@@ -239,7 +331,7 @@ def _fetch_json(url: str) -> Optional[dict]:
             print(f"  [WARN] JSON parse failed for {url}: {e}", file=sys.stderr)
 
     if _FETCHER in ("auto", "crawl4ai"):
-        cached = _C4A_CACHE.get(url) or _crawl4ai_html(url)
+        cached = _crawl4ai_html(url)
         if cached:
             try:
                 return json.loads(_unwrap_pre(cached))
@@ -441,46 +533,12 @@ def scrape_llm_stats_news() -> list[dict]:
 # ──────────────────────────────────────────────
 
 def scrape_ai_news() -> list[dict]:
-    """Scrape artificialintelligence-news.com."""
-    print("[4/7] AI News (artificialintelligence-news.com) ...", file=sys.stderr)
-    url = "https://www.artificialintelligence-news.com/"
-    html = _fetch_html(url, wait_selector="article", wait_ms=3000)
-    if not html:
-        return []
-
-    soup = BeautifulSoup(html, "html.parser")
-    results = []
-
-    for article in soup.find_all("article"):
-        title_el = article.find(["h2", "h3", "h4"])
-        link_el = article.find("a", href=True)
-        summary_el = article.find("p")
-        date_el = article.find("time") or article.find(class_=re.compile(r"date|time|posted", re.I))
-
-        title = _clean_text(title_el.get_text()) if title_el else ""
-        if not title or len(title) < 10:
-            continue
-
-        href = link_el["href"] if link_el else ""
-        if href and not href.startswith("http"):
-            href = urljoin(url, href)
-
-        date_str = _parse_date(date_el.get_text()) if date_el else ""
-
-        results.append({
-            "source": "AI News",
-            "source_type": "news",
-            "title": title,
-            "url": href,
-            "summary": _clean_text(summary_el.get_text()) if summary_el else "",
-            "authors": [],
-            "date": date_str,
-            "upvotes": 0,
-            "tags": [],
-        })
-
-    print(f"  -> {len(results)} articles", file=sys.stderr)
-    return results[:30]
+    """Source 4: The Decoder RSS（原 AI News 站点被 SG captcha 永久拦截）。"""
+    print("[4/7] The Decoder (RSS) ...", file=sys.stderr)
+    xml = _fetch_html(THE_DECODER_RSS, wait_ms=1000)
+    items = _parse_rss(xml, "The Decoder", "news") if xml else []
+    print(f"  -> {len(items)} articles", file=sys.stderr)
+    return items[:30]
 
 
 # ──────────────────────────────────────────────
@@ -536,6 +594,7 @@ def scrape_mit_ai_news() -> list[dict]:
 # ──────────────────────────────────────────────
 
 GOOGLE_RSS = "https://blog.google/innovation-and-ai/technology/ai/rss/"
+THE_DECODER_RSS = "https://the-decoder.com/feed/"
 
 
 def _parse_rss(xml_text: str, source: str, source_type: str) -> list[dict]:
@@ -904,7 +963,7 @@ SOURCES = {
     "1": ("hf_daily", scrape_hf_daily_papers),
     "2": ("hf_trending", scrape_hf_trending_papers),
     "3": ("llm_stats", scrape_llm_stats_news),
-    "4": ("ai_news", scrape_ai_news),
+    "4": ("the_decoder", scrape_ai_news),
     "5": ("mit", scrape_mit_ai_news),
     "6": ("google_blog", scrape_google_ai_blog),
     "7": ("github", scrape_github_trending),
@@ -912,7 +971,7 @@ SOURCES = {
 
 
 def main():
-    global _PROXY, _USE_PLAYWRIGHT, _INSECURE_SSL, _FETCHER
+    global _PROXY, _USE_PLAYWRIGHT, _INSECURE_SSL, _FETCHER, _STRICT
 
     parser = argparse.ArgumentParser(description="Tech Scout Daily Scraper")
     parser.add_argument("--output", default="/tmp/tech_scout_raw.json", help="Output JSON file")
@@ -921,6 +980,10 @@ def main():
     parser.add_argument("--proxy", default="", help="HTTP proxy URL (e.g. http://<host>:<port>)")
     parser.add_argument("--fetcher", choices=["auto", "requests", "crawl4ai"], default="auto",
                         help="抓取后端：auto=requests 失败后走 crawl4ai；requests；crawl4ai=全部走 crawl4ai")
+    parser.add_argument("--strict", action="store_true",
+                        help="crawl4ai 模式失败时不回退 requests（默认会部分降级）")
+    parser.add_argument("--health", action="store_true",
+                        help="只做各源可达性检查，不写 JSON、不出报纸")
     parser.add_argument("--use-playwright", action="store_true", help="Use Playwright for all sources (bypasses anti-bot, uses proxy)")
     parser.add_argument("--insecure-ssl", action="store_true", help="Skip SSL verification")
     args = parser.parse_args()
@@ -929,6 +992,7 @@ def main():
     if args.proxy:
         _PROXY = args.proxy
     _FETCHER = args.fetcher
+    _STRICT = args.strict
     if args.use_playwright:
         _USE_PLAYWRIGHT = True
     if args.insecure_ssl:
@@ -956,7 +1020,7 @@ def main():
             {"1": "https://huggingface.co/api/daily_papers",
              "2": "https://huggingface.co/papers/trending",
              "3": "https://llm-stats.com/ai-news",
-             "4": "https://www.artificialintelligence-news.com/",
+             "4": "https://the-decoder.com/feed/",
              "5": "https://news.mit.edu/topic/artificial-intelligence2",
              "6": "https://blog.google/innovation-and-ai/technology/ai/rss/",
              "7": "https://github.com/trending"}[k]
@@ -967,6 +1031,7 @@ def main():
 
     all_items = []
     failures = []
+    per_source: dict[str, int] = {}
 
     for key in valid:
         name, fn = SOURCES[key]
@@ -975,12 +1040,25 @@ def main():
             if items is None or len(items) == 0:
                 # Treat empty results as a failure (network blocked, etc.)
                 failures.append(name)
+                per_source[name] = 0
                 print(f"  [WARN] Source {key} ({name}) returned no items", file=sys.stderr)
             else:
                 all_items.extend(items)
+                per_source[name] = len(items)
         except Exception as e:
             print(f"  [ERROR] Source {key} ({name}) failed: {e}", file=sys.stderr)
             failures.append(name)
+            per_source[name] = 0
+
+    if args.health:
+        print("\n源健康检查（0 表示该源无内容）:", file=sys.stderr)
+        for key in valid:
+            name = SOURCES[key][0]
+            count = per_source.get(name, 0)
+            flag = "OK  " if count else "FAIL"
+            print(f"  {flag} [{key}] {name:16s} {count:3d} items", file=sys.stderr)
+        print(f"\n结果: {len(valid) - len(failures)}/{len(valid)} 源可用", file=sys.stderr)
+        sys.exit(0 if not failures else 1)
 
     # Cleanup Playwright browser if used
     if _PLAYWRIGHT_BROWSER is not None:

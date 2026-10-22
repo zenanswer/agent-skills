@@ -1,0 +1,4 @@
+# 可选：仅当需要本地 Playwright 兜底时安装
+# pip install -r scripts/requirements-optional.txt
+# python -m playwright install chromium
+playwright>=1.40.0

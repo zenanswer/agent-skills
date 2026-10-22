@@ -30,6 +30,10 @@ def main():
     parser.add_argument("--proxy", default="", help="HTTP proxy URL (e.g. http://<host>:<port>)")
     parser.add_argument("--fetcher", choices=["auto", "requests", "crawl4ai"], default="auto",
                         help="抓取后端：auto=requests 失败后走 crawl4ai；requests；crawl4ai=全部走 crawl4ai")
+    parser.add_argument("--strict", action="store_true",
+                        help="crawl4ai 模式失败时不回退 requests")
+    parser.add_argument("--health", action="store_true",
+                        help="只检查各源可达性，不生成日报")
     parser.add_argument("--use-playwright", action="store_true", help="Use Playwright (browser-based, bypasses anti-bot)")
     parser.add_argument("--playwright-only-failures", action="store_true", help="Use Playwright only for failed sources (fallback)")
     parser.add_argument("--ask-on-failure", action="store_true", help="After initial fetch, if any source still failed, interactively ask to skip, supply a proxy, or abort")
@@ -69,15 +73,39 @@ def main():
         scraper_cmd += ["--use-playwright"]
     if args.fetcher and args.fetcher != "auto":
         scraper_cmd += ["--fetcher", args.fetcher]
+    if args.strict:
+        scraper_cmd += ["--strict"]
+    if args.health:
+        scraper_cmd += ["--health"]
 
     ret = subprocess.run(scraper_cmd, env=env)
     if ret.returncode != 0:
         print("ERROR: Scraper failed.", file=sys.stderr)
         sys.exit(1)
 
+    if args.health:
+        sys.exit(ret.returncode)
+
     if not os.path.exists(raw_file):
         print(f"ERROR: Scraper output not found: {raw_file}", file=sys.stderr)
         sys.exit(1)
+
+    try:
+        with open(raw_file, "r", encoding="utf-8") as f:
+            _raw = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"ERROR: 读取抓取结果失败: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not _raw.get("items"):
+        failed = _raw.get("sources_failed") or []
+        print("ERROR: 所有源都没有抓到内容。", file=sys.stderr)
+        print(f"  失败源: {', '.join(failed) if failed else '未知'}", file=sys.stderr)
+        print("  排查建议:", file=sys.stderr)
+        print("    1) crawl4ai 是否可达、CRAWL4AI_TOKEN 是否失效（401/403）", file=sys.stderr)
+        print("    2) 改用 --fetcher auto 观察哪些源本地可直连", file=sys.stderr)
+        print("    3) 网络受限时可加 --proxy <url> 或用 --health 只做连通性检查", file=sys.stderr)
+        sys.exit(2)
 
     # If --playwright-only-failures, check which sources failed and re-run with playwright for those
     if args.playwright_only_failures:
@@ -96,7 +124,7 @@ def main():
                     "1": ("hf_daily", None),
                     "2": ("hf_trending", None),
                     "3": ("llm_stats", None),
-                    "4": ("ai_news", None),
+                    "4": ("the_decoder", None),
                     "5": ("mit", None),
                     "6": ("google_blog", None),
                     "7": ("github", None),
@@ -167,7 +195,7 @@ def main():
                         print(f"  [Retry] Re-running failed sources with proxy: {proxy_url}", flush=True)
                         name_to_id = {
                             "hf_daily": "1", "hf_trending": "2", "llm_stats": "3",
-                            "ai_news": "4", "mit": "5", "google_blog": "6", "github": "7",
+                            "the_decoder": "4", "mit": "5", "google_blog": "6", "github": "7",
                         }
                         retry_ids = [name_to_id[n] for n in _failed if n in name_to_id]
                         if retry_ids:
