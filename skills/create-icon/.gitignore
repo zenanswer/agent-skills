@@ -1,0 +1,12 @@
+# Secrets - never commit
+.env
+
+# Generated icons
+output/
+
+# Python
+__pycache__/
+*.pyc
+
+# uv
+.uv/

@@ -1,0 +1,78 @@
+{
+  "styles": {
+    "flat-color": {
+      "name": "Flat Color",
+      "name_cn": "扁平彩色",
+      "description": "Flat design with solid vibrant colors, no gradients or shadows. Clean shapes, modern and friendly. Like Material Design or Fluent icons.",
+      "prompt_suffix": "flat design, solid vibrant colors, no gradients, no shadows, clean geometric shapes, modern material style, centered composition, simple and minimal, icon for presentation"
+    },
+    "line-monochrome": {
+      "name": "Line Monochrome",
+      "name_cn": "线性单色",
+      "description": "Single-color line icon with uniform stroke width. Minimalist and elegant. Easy to recolor to match any theme. Like Feather or Heroicons style.",
+      "prompt_suffix": "line icon, single color, uniform stroke width, minimalist, elegant, thin lines, outline style, feather icon style, centered, clean, simple, no fill, vector-like"
+    },
+    "line-color": {
+      "name": "Line Color",
+      "name_cn": "彩色线性",
+      "description": "Line icon with accent colors. Outlined shapes with selective color fills. Modern and professional, like Tabler or Phosphor icons.",
+      "prompt_suffix": "outlined line icon with accent colors, selective color fills, modern professional style, uniform stroke, tabler icon style, centered, clean design, vector-like"
+    },
+    "3d-render": {
+      "name": "3D Render",
+      "name_cn": "3D 立体",
+      "description": "3D rendered icon with soft shadows, depth, and subtle gradients. Glossy and modern, like macOS Big Sur or iOS app icons.",
+      "prompt_suffix": "3D rendered icon, soft shadows, depth, subtle gradients, glossy modern style, rounded shapes, macOS Big Sur style, centered, high quality render, clay-like material"
+    },
+    "duotone": {
+      "name": "Duotone",
+      "name_cn": "双色调",
+      "description": "Two-tone icon using a primary and secondary color. Stylish and contemporary, like Font Awesome duotone or Phosphor duotone.",
+      "prompt_suffix": "duotone icon, two-tone color scheme, primary and secondary color, stylish contemporary, font awesome duotone style, layered opacity, centered, modern design"
+    },
+    "filled-color": {
+      "name": "Filled Color",
+      "name_cn": "填充彩色",
+      "description": "Solid filled icon with bold colors. Strong visual presence, like Material filled or Ionicons style.",
+      "prompt_suffix": "filled solid icon, bold vibrant colors, strong visual presence, material filled style, ionicons style, centered, rounded corners, clean and bold"
+    },
+    "isometric": {
+      "name": "Isometric",
+      "name_cn": "等距视角",
+      "description": "Isometric 3D icon with consistent 30-degree angle projection. Technical yet approachable, like unDraw 3D or 3D icon kits.",
+      "prompt_suffix": "isometric 3D icon, 30-degree angle projection, consistent perspective, soft lighting, pastel colors, technical yet approachable, undraw 3D style, centered, clean background"
+    },
+    "hand-drawn": {
+      "name": "Hand Drawn",
+      "name_cn": "手绘风格",
+      "description": "Hand-drawn icon with organic lines and sketch-like quality. Warm and approachable, like Streamline Hand-drawn or Notion style.",
+      "prompt_suffix": "hand-drawn icon, organic lines, sketch-like quality, warm and approachable, rough strokes, streamline hand-drawn style, notion style, centered, charming imperfection"
+    },
+    "gradient": {
+      "name": "Gradient",
+      "name_cn": "渐变风格",
+      "description": "Icon with smooth color gradients. Vibrant and eye-catching, like modern SaaS landing page icons.",
+      "prompt_suffix": "icon with smooth color gradients, vibrant and eye-catching, modern SaaS style, glassmorphism accent, soft glow, centered, premium feel, high quality"
+    },
+    "minimal-solid": {
+      "name": "Minimal Solid",
+      "name_cn": "极简实心",
+      "description": "Minimalist solid silhouette icon. High contrast, bold and simple shapes. Like SF Symbols or simple geometric icons.",
+      "prompt_suffix": "minimalist solid silhouette icon, high contrast, bold simple shapes, SF Symbols style, single color fill, no details, centered, maximum clarity, vector-like"
+    }
+  },
+  "backgrounds": {
+    "white": "plain solid white background",
+    "light-gray": "plain solid light gray background (#F5F5F5)",
+    "dark": "plain solid dark navy background (#1A1A2E)",
+    "transparent-friendly": "plain solid pure white background, evenly lit, no texture, for easy background removal"
+  },
+  "common_subjects": [
+    "growth", "team", "innovation", "target", "lightbulb", "rocket",
+    "chart", "shield", "gear", "lock", "cloud", "database",
+    "connection", "communication", "analysis", "strategy", "award",
+    "calendar", "document", "folder", "mail", "phone", "search",
+    "settings", "star", "heart", "checkmark", "warning", "info",
+    "user", "users", "building", "globe", "money", "time"
+  ]
+}

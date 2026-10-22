@@ -1,0 +1,19 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.ruff_cache/
+
+# 生成产物
+output/
+logos/
+*.log
+
+# macOS / 同步盘垃圾文件
+._*
+.DS_Store
