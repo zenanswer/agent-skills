@@ -1,71 +1,255 @@
 {
+  "version": 2,
   "styles": {
     "flat-color": {
       "name": "Flat Color",
       "name_cn": "扁平彩色",
-      "description": "Flat design with solid vibrant colors, no gradients or shadows. Clean shapes, modern and friendly. Like Material Design or Fluent icons.",
-      "prompt_suffix": "flat design, solid vibrant colors, no gradients, no shadows, clean geometric shapes, modern material style, centered composition, simple and minimal, icon for presentation"
+      "description": "Flat vector design with solid vibrant colors, no gradients or shading. The safest default for business slides.",
+      "tags": ["business", "default"],
+      "positive": [
+        "flat vector illustration",
+        "solid vibrant color fills",
+        "clean geometric shapes",
+        "no gradients",
+        "no shadows",
+        "crisp hard edges",
+        "bold simple silhouette"
+      ],
+      "negative": ["gradient", "3d render", "photorealism", "texture", "outline only", "soft shadow", "glow"]
+    },
+    "flat-2.0": {
+      "name": "Flat 2.0",
+      "name_cn": "扁平 2.0",
+      "description": "Modern flat design with layered shapes and a two-step shade. More depth than flat-color, still clean.",
+      "tags": ["modern", "business"],
+      "positive": [
+        "modern flat design",
+        "layered geometric shapes",
+        "two-step flat shading",
+        "rounded corners",
+        "confident readable silhouette",
+        "subtle tinted accent shapes"
+      ],
+      "negative": ["gradient mesh", "3d render", "photorealism", "outline only", "glow", "texture", "noisy detail"]
     },
     "line-monochrome": {
       "name": "Line Monochrome",
       "name_cn": "线性单色",
-      "description": "Single-color line icon with uniform stroke width. Minimalist and elegant. Easy to recolor to match any theme. Like Feather or Heroicons style.",
-      "prompt_suffix": "line icon, single color, uniform stroke width, minimalist, elegant, thin lines, outline style, feather icon style, centered, clean, simple, no fill, vector-like"
+      "description": "Single-color outlined icon with uniform stroke width. Minimal, easy to recolor. Feather/Heroicons feel.",
+      "tags": ["minimal", "recolorable"],
+      "positive": [
+        "outline line icon",
+        "single color",
+        "uniform thick stroke",
+        "round line caps and joins",
+        "no fill",
+        "minimal detail",
+        "feather icon style"
+      ],
+      "negative": ["fill", "gradient", "3d render", "photorealism", "shading", "multiple colors", "thin scratchy lines"]
     },
     "line-color": {
       "name": "Line Color",
       "name_cn": "彩色线性",
-      "description": "Line icon with accent colors. Outlined shapes with selective color fills. Modern and professional, like Tabler or Phosphor icons.",
-      "prompt_suffix": "outlined line icon with accent colors, selective color fills, modern professional style, uniform stroke, tabler icon style, centered, clean design, vector-like"
-    },
-    "3d-render": {
-      "name": "3D Render",
-      "name_cn": "3D 立体",
-      "description": "3D rendered icon with soft shadows, depth, and subtle gradients. Glossy and modern, like macOS Big Sur or iOS app icons.",
-      "prompt_suffix": "3D rendered icon, soft shadows, depth, subtle gradients, glossy modern style, rounded shapes, macOS Big Sur style, centered, high quality render, clay-like material"
+      "description": "Outlined icon with selective accent fills. Professional, modern, Tabler/Phosphor feel.",
+      "tags": ["business", "modern"],
+      "positive": [
+        "outline line icon",
+        "uniform stroke width",
+        "selective flat accent fills",
+        "two or three colors",
+        "clean rounded joins",
+        "tabler icon style"
+      ],
+      "negative": ["full color fill", "gradient", "3d render", "photorealism", "texture", "busy detail"]
     },
     "duotone": {
       "name": "Duotone",
       "name_cn": "双色调",
-      "description": "Two-tone icon using a primary and secondary color. Stylish and contemporary, like Font Awesome duotone or Phosphor duotone.",
-      "prompt_suffix": "duotone icon, two-tone color scheme, primary and secondary color, stylish contemporary, font awesome duotone style, layered opacity, centered, modern design"
+      "description": "Two-tone filled icon: one solid primary shape plus a secondary accent layer.",
+      "tags": ["stylish"],
+      "positive": [
+        "duotone icon",
+        "two-color scheme",
+        "solid primary fill",
+        "secondary accent layer",
+        "soft opacity difference between layers",
+        "bold simple silhouette"
+      ],
+      "negative": ["three or more colors", "gradient", "3d render", "photorealism", "outline only", "texture"]
+    },
+    "duotone-line": {
+      "name": "Duotone Line",
+      "name_cn": "双色线性",
+      "description": "Thin outline icon with a single accent block. Crisp and contemporary.",
+      "tags": ["modern", "minimal"],
+      "positive": [
+        "thin outline icon",
+        "uniform stroke",
+        "one accent color block",
+        "mostly monochrome",
+        "generous negative space",
+        "crisp geometric construction"
+      ],
+      "negative": ["full color fill", "gradient", "3d render", "photorealism", "heavy shadows", "texture"]
     },
     "filled-color": {
       "name": "Filled Color",
       "name_cn": "填充彩色",
-      "description": "Solid filled icon with bold colors. Strong visual presence, like Material filled or Ionicons style.",
-      "prompt_suffix": "filled solid icon, bold vibrant colors, strong visual presence, material filled style, ionicons style, centered, rounded corners, clean and bold"
-    },
-    "isometric": {
-      "name": "Isometric",
-      "name_cn": "等距视角",
-      "description": "Isometric 3D icon with consistent 30-degree angle projection. Technical yet approachable, like unDraw 3D or 3D icon kits.",
-      "prompt_suffix": "isometric 3D icon, 30-degree angle projection, consistent perspective, soft lighting, pastel colors, technical yet approachable, undraw 3D style, centered, clean background"
-    },
-    "hand-drawn": {
-      "name": "Hand Drawn",
-      "name_cn": "手绘风格",
-      "description": "Hand-drawn icon with organic lines and sketch-like quality. Warm and approachable, like Streamline Hand-drawn or Notion style.",
-      "prompt_suffix": "hand-drawn icon, organic lines, sketch-like quality, warm and approachable, rough strokes, streamline hand-drawn style, notion style, centered, charming imperfection"
-    },
-    "gradient": {
-      "name": "Gradient",
-      "name_cn": "渐变风格",
-      "description": "Icon with smooth color gradients. Vibrant and eye-catching, like modern SaaS landing page icons.",
-      "prompt_suffix": "icon with smooth color gradients, vibrant and eye-catching, modern SaaS style, glassmorphism accent, soft glow, centered, premium feel, high quality"
+      "description": "Bold solid filled icon with saturated colors. Strong presence on a slide.",
+      "tags": ["bold"],
+      "positive": [
+        "solid filled icon",
+        "bold saturated colors",
+        "rounded corners",
+        "high contrast",
+        "thick confident shapes",
+        "material filled style"
+      ],
+      "negative": ["outline only", "gradient", "3d render", "photorealism", "thin lines", "texture"]
     },
     "minimal-solid": {
       "name": "Minimal Solid",
       "name_cn": "极简实心",
-      "description": "Minimalist solid silhouette icon. High contrast, bold and simple shapes. Like SF Symbols or simple geometric icons.",
-      "prompt_suffix": "minimalist solid silhouette icon, high contrast, bold simple shapes, SF Symbols style, single color fill, no details, centered, maximum clarity, vector-like"
+      "description": "Single-color solid silhouette with maximum clarity. SF Symbols feel.",
+      "tags": ["minimal", "recolorable"],
+      "positive": [
+        "minimal solid silhouette",
+        "single color fill",
+        "maximum clarity",
+        "no internal detail",
+        "simple geometric construction",
+        "sf symbols style"
+      ],
+      "negative": ["outline", "gradient", "3d render", "photorealism", "texture", "multiple colors", "fine detail"]
+    },
+    "3d-render": {
+      "name": "3D Render",
+      "name_cn": "3D 立体",
+      "description": "Soft-shaded 3D icon with studio lighting and depth. Premium, Apple-like.",
+      "tags": ["premium", "eye-catching"],
+      "positive": [
+        "3d rendered icon",
+        "soft studio lighting",
+        "smooth matte material",
+        "gentle ambient occlusion",
+        "rounded chunky shapes",
+        "subtle depth of field",
+        "premium big sur style"
+      ],
+      "negative": ["flat 2d", "photorealism", "text", "scene", "busy background", "clutter"]
+    },
+    "clay-3d": {
+      "name": "Clay 3D",
+      "name_cn": "黏土 3D",
+      "description": "Soft clay-render icon with pastel matte material. Friendly and playful.",
+      "tags": ["playful", "premium"],
+      "positive": [
+        "clay render icon",
+        "matte pastel material",
+        "soft rounded blobby shapes",
+        "gentle soft shadows",
+        "playful friendly mood",
+        "subtle surface texture"
+      ],
+      "negative": ["flat 2d", "photorealism", "glossy plastic", "text", "scene", "clutter"]
+    },
+    "glass": {
+      "name": "Glassmorphism",
+      "name_cn": "玻璃拟态",
+      "description": "Frosted glass layers with a bright rim and soft gradient. Modern SaaS look.",
+      "tags": ["saas", "premium"],
+      "positive": [
+        "glassmorphism icon",
+        "frosted translucent layers",
+        "soft colorful gradient",
+        "thin bright rim light",
+        "subtle inner glow",
+        "clean minimal composition"
+      ],
+      "negative": ["flat opaque", "photorealism", "texture", "text", "clutter", "heavy shadow"]
+    },
+    "isometric": {
+      "name": "Isometric",
+      "name_cn": "等距视角",
+      "description": "Isometric 3D icon at a consistent 30-degree projection. Technical yet approachable.",
+      "tags": ["technical", "modern"],
+      "positive": [
+        "isometric 3d icon",
+        "30 degree projection",
+        "consistent perspective",
+        "soft even lighting",
+        "clean geometric volumes",
+        "pastel accent colors"
+      ],
+      "negative": ["front view", "perspective distortion", "photorealism", "text", "busy scene", "clutter"]
+    },
+    "isometric-2.5d": {
+      "name": "Isometric 2.5D",
+      "name_cn": "等距 2.5D",
+      "description": "Flat isometric illustration with blocky volumes and minimal shading. Diagram-friendly.",
+      "tags": ["technical", "diagram"],
+      "positive": [
+        "2.5d isometric flat illustration",
+        "clean geometric blocks",
+        "minimal flat shading",
+        "crisp edges",
+        "limited color palette",
+        "technical diagram style"
+      ],
+      "negative": ["realistic material", "photorealism", "text", "glow", "gradient mesh", "clutter"]
+    },
+    "gradient": {
+      "name": "Gradient",
+      "name_cn": "渐变风格",
+      "description": "Smooth two-color gradient icon with a soft glow. Vibrant SaaS landing-page look.",
+      "tags": ["vibrant", "saas"],
+      "positive": [
+        "smooth two-color gradient",
+        "vibrant saturated hues",
+        "soft inner glow",
+        "clean rounded silhouette",
+        "premium saas style",
+        "minimal detail"
+      ],
+      "negative": ["flat solid only", "photorealism", "text", "texture", "clutter", "muddy colors"]
+    },
+    "hand-drawn": {
+      "name": "Hand Drawn",
+      "name_cn": "手绘风格",
+      "description": "Organic sketch-like icon with slightly irregular strokes. Warm and human.",
+      "tags": ["warm", "casual"],
+      "positive": [
+        "hand drawn icon",
+        "organic slightly irregular strokes",
+        "sketch-like quality",
+        "warm friendly mood",
+        "textured ink line",
+        "charming imperfection"
+      ],
+      "negative": ["perfect geometry", "3d render", "photorealism", "neon", "text", "clutter"]
+    },
+    "notion": {
+      "name": "Notion Style",
+      "name_cn": "Notion 风格",
+      "description": "Editorial black-line icon with restrained flat fills. Calm documentation look.",
+      "tags": ["editorial", "minimal"],
+      "positive": [
+        "editorial line icon",
+        "black outline with flat muted fills",
+        "simple geometric construction",
+        "generous negative space",
+        "calm documentation style",
+        "slightly rounded corners"
+      ],
+      "negative": ["gradient", "3d render", "glow", "neon", "photorealism", "busy detail"]
     }
   },
   "backgrounds": {
     "white": "plain solid white background",
-    "light-gray": "plain solid light gray background (#F5F5F5)",
-    "dark": "plain solid dark navy background (#1A1A2E)",
-    "transparent-friendly": "plain solid pure white background, evenly lit, no texture, for easy background removal"
+    "light-gray": "plain solid light gray background (#F5F5F7)",
+    "dark": "plain solid dark navy background (#111827)",
+    "transparent-friendly": "plain flat pure white background, evenly lit, no shadow, no vignette, no gradient"
   },
   "common_subjects": [
     "growth", "team", "innovation", "target", "lightbulb", "rocket",
@@ -73,6 +257,8 @@
     "connection", "communication", "analysis", "strategy", "award",
     "calendar", "document", "folder", "mail", "phone", "search",
     "settings", "star", "heart", "checkmark", "warning", "info",
-    "user", "users", "building", "globe", "money", "time"
+    "user", "users", "building", "globe", "money", "time",
+    "ai", "algorithm", "automation", "data pipeline", "monitoring",
+    "cost saving", "scalability", "collaboration", "roadmap", "launch"
   ]
 }

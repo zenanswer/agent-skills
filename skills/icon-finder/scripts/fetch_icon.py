@@ -1,228 +1,269 @@
 #!/usr/bin/env python3
-"""Fetch and render a single icon as both SVG and PNG (transparent background).
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#   "requests>=2.28",
+#   "pillow>=10.0",
+#   "resvg-py>=0.2",
+# ]
+# ///
+"""Fetch logos as SVG + normalized PNG sets (aspect preserved, equal padding).
 
-Proxy: set HTTPS_PROXY / HTTP_PROXY environment variables.
+Each ref produces:
+  <slug>.svg            original or recolored vector
+  <slug>.png            normalized square PNG at the largest requested size
+  <slug>@512.png        the same asset at smaller sizes
 
 Usage:
-  python fetch_icon.py <source:slug> [--out DIR] [--size 512] [--style color|mono] [--color HEX]
-
-The <source:slug> identifier comes from search_icons.py output `id` field:
-  - iconify:    "logos:aws"
-  - simpleicons: "amazonwebservices"
-
-Outputs <name>.svg and <name>.png into --out (default ./logos).
+  uv run scripts/fetch_icon.py "iconify:logos:aws"
+  uv run scripts/fetch_icon.py aws kubernetes react --out ./logos --sizes 1024,512
+  uv run scripts/fetch_icon.py "svgl:openai" --variant dark
+  uv run scripts/fetch_icon.py "iconify:logos:aws" --style mono --color "#FFFFFF"
+  uv run scripts/fetch_icon.py aws k8s --manifest logos.json --sheet preview.png
 """
 
 from __future__ import annotations
 
 import argparse
-import os
-import re
-import shutil
-import subprocess
+import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
-import requests
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-ICONIFY_SVG_URL = "https://api.iconify.design/{icon}.svg"
-SIMPLEICONS_CDN_URL = "https://cdn.simpleicons.org/{slug}{color}"
-SIMPLEICONS_JSON_URL = "https://cdn.jsdelivr.net/npm/simple-icons@latest/_data/simple-icons.json"
+from logokit import net, normalize, render, sources
+from logokit import svg as svgmod
+from logokit.sheet import make_sheet
 
-REQUEST_TIMEOUT = 30
-
-
-def get_proxy() -> dict[str, str] | None:
-    """Build a requests proxies dict from HTTPS_PROXY / HTTP_PROXY env vars."""
-    proxies: dict[str, str] = {}
-    for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
-        val = os.environ.get(var)
-        if val:
-            scheme = "https" if var.lower().startswith("https") else "http"
-            proxies.setdefault(scheme, val)
-    return proxies or None
+SUFFIX = {
+    "color": "",
+    "auto": "",
+    "mono": "_mono",
+    "dark": "_dark",
+    "light": "_light",
+    "wordmark": "_wordmark",
+}
 
 
-PROXIES = get_proxy()
-
-
-def make_session() -> requests.Session:
-    s = requests.Session()
-    if PROXIES:
-        s.proxies.update(PROXIES)
-    return s
-
-
-def compute_si_slug(title: str) -> str:
-    """Compute the Simple Icons slug from a title (lowercase, alnum only)."""
-    s = title.lower()
-    s = re.sub(r"[^a-z0-9]+", "", s)
-    return s
-
-
-def parse_ref(ref: str) -> tuple[str, str]:
-    """Parse a source:slug reference like 'iconify:logos:aws' or 'amazonwebservices'."""
-    if ":" in ref:
-        parts = ref.split(":", 1)
-        source = parts[0]
-        slug = parts[1]
-        if source == "iconify" and slug.startswith("logos:"):
-            slug = slug.split(":", 1)[1]
-        return source, slug
-    if ref.startswith("logos/"):
-        return "iconify", ref.split("/", 1)[1]
-    return "simpleicons", ref
-
-
-def safe_name(slug: str) -> str:
-    s = slug.lower()
-    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
-    return s or "icon"
-
-
-def _get_simpleicons_entry(slug: str) -> dict[str, Any] | None:
-    """Look up a Simple Icons entry by computed slug. Returns the entry dict or None."""
-    session = make_session()
-    try:
-        resp = session.get(SIMPLEICONS_JSON_URL, timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
-        data = resp.json()
-        icons = data if isinstance(data, list) else data.get("icons", [])
-        for entry in icons:
-            if compute_si_slug(entry.get("title", "")) == slug:
-                return entry
-    except (requests.RequestException, ValueError):
-        pass
-    return None
-
-
-def _get_simpleicons_color(slug: str) -> str | None:
-    entry = _get_simpleicons_entry(slug)
-    if entry:
-        hex_val = entry.get("hex")
-        return f"#{hex_val}" if hex_val else None
-    return None
-
-
-def fetch_svg(source: str, slug: str, style: str, color: str | None) -> tuple[str, str | None]:
-    """Fetch the raw SVG string. Returns (svg_text, brand_color)."""
-    session = make_session()
-
-    if source == "iconify":
-        url = ICONIFY_SVG_URL.format(icon=f"logos:{slug}")
-        resp = session.get(url, timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
-        svg = resp.text
-        if style == "mono" and color:
-            svg = _recolor_svg(svg, color)
-        return svg, None
-
-    if source == "simpleicons":
-        brand_color = _get_simpleicons_color(slug)
-        color_param = ""
-        if style == "mono":
-            target = color or brand_color
-            if target:
-                normalized = target.lstrip("#")
-                color_param = f"/{normalized}"
-        url = SIMPLEICONS_CDN_URL.format(slug=slug, color=color_param)
-        resp = session.get(url, timeout=REQUEST_TIMEOUT)
-        if resp.status_code == 404:
-            raise RuntimeError(
-                f"Simple Icons CDN does not serve '{slug}' (HTTP 404). "
-                f"Some brands (AWS, Azure, Vue.js, Java, etc.) are excluded from the CDN "
-                f"for trademark/legal reasons even though they appear in the data. "
-                f"Search again and pick an 'iconify' source candidate instead - e.g. "
-                f"run: python scripts/search_icons.py \"{slug}\""
-            )
-        resp.raise_for_status()
-        svg = resp.text
-        if style == "mono" and color:
-            svg = _recolor_svg(svg, color)
-        return svg, brand_color
-
-    raise ValueError(f"Unknown source: {source}")
-
-
-def _recolor_svg(svg: str, color: str) -> str:
-    """Replace the fill color in an SVG with the given hex color."""
-    normalized = color if color.startswith("#") else f"#{color}"
-    svg = re.sub(r'fill="[^"]*"', f'fill="{normalized}"', svg)
-    if 'fill="' not in svg:
-        svg = svg.replace("<path ", f'<path fill="{normalized}" ', 1)
-    return svg
-
-
-def render_png(svg_text: str, out_path: Path, size: int) -> None:
-    """Render SVG to PNG (transparent background). Tries cairosvg then rsvg-convert."""
-    try:
-        import cairosvg
-        cairosvg.svg2png(
-            bytestring=svg_text.encode("utf-8"),
-            write_to=str(out_path),
-            output_width=size,
-            output_height=size,
-        )
-        return
-    except ImportError:
-        pass
-    except Exception as exc:
-        print(f"[warn] cairosvg render failed ({exc}); trying rsvg-convert.", file=sys.stderr)
-
-    if shutil.which("rsvg-convert"):
-        tmp_svg = out_path.with_suffix(".tmp.svg")
-        tmp_svg.write_text(svg_text)
-        try:
-            subprocess.run(
-                ["rsvg-convert", "-w", str(size), "-h", str(size), "-o", str(out_path), str(tmp_svg)],
-                check=True,
-            )
-            return
-        finally:
-            tmp_svg.unlink(missing_ok=True)
-
-    print(
-        "[error] No SVG renderer available. Install with:\n"
-        "  pip install cairosvg   (and `brew install cairo` on macOS)\n"
-        "  OR  brew install librsvg",
-        file=sys.stderr,
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        description="Fetch logos as SVG + normalized transparent PNGs.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sys.exit(2)
+    ap.add_argument(
+        "refs",
+        nargs="+",
+        help="Refs from search output, e.g. 'iconify:logos:aws' 'simpleicons:github' 'svgl:openai'",
+    )
+    ap.add_argument(
+        "--out", "-o", default="./logos", help="Output directory (default ./logos)"
+    )
+    ap.add_argument(
+        "--sizes",
+        default=None,
+        help="Comma list of square sizes (default 1024,512). Largest keeps the plain name.",
+    )
+    ap.add_argument(
+        "--size",
+        type=int,
+        default=None,
+        help="Single size shorthand (overrides --sizes)",
+    )
+    ap.add_argument(
+        "--variant",
+        choices=["auto", "color", "mono", "light", "dark", "wordmark"],
+        default="auto",
+        help="auto/color: official colors; mono: one color; dark/light: slide-background aware",
+    )
+    ap.add_argument(
+        "--style",
+        choices=["color", "mono"],
+        default=None,
+        help="Backward-compatible alias for --variant",
+    )
+    ap.add_argument("--color", help="Hex color for mono/dark/light recoloring")
+    ap.add_argument(
+        "--padding",
+        type=float,
+        default=normalize.DEFAULT_PADDING,
+        help=f"Canvas padding ratio (default {normalize.DEFAULT_PADDING})",
+    )
+    ap.add_argument(
+        "--no-trim",
+        action="store_true",
+        help="Keep the source whitespace instead of trimming",
+    )
+    ap.add_argument("--svg-only", action="store_true", help="Only write SVG")
+    ap.add_argument("--png-only", action="store_true", help="Only write PNG")
+    ap.add_argument("--sheet", help="Write a contact sheet of the fetched logos")
+    ap.add_argument("--sheet-theme", choices=["light", "dark"], default="light")
+    ap.add_argument(
+        "--manifest", help="Write a manifest JSON (default: <out>/logos.json)"
+    )
+    ap.add_argument("--json", action="store_true", help="Print the manifest to stdout")
+    args = ap.parse_args()
+    if args.svg_only and args.png_only:
+        ap.error("--svg-only and --png-only are mutually exclusive")
+    return ap
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Fetch and render an icon as SVG + PNG.")
-    parser.add_argument("ref", help="source:slug id from search_icons.py (e.g. 'iconify:logos:aws').")
-    parser.add_argument("--out", default="./logos", help="Output directory (default ./logos).")
-    parser.add_argument("--size", type=int, default=512, help="PNG long-edge size in px (default 512).")
-    parser.add_argument("--style", choices=["color", "mono"], default="color",
-                        help="Render style (default color).")
-    parser.add_argument("--color", help="Hex color for mono style (e.g. '#FF9900'). Defaults to brand color.")
-    parser.add_argument("--svg-only", action="store_true", help="Only output SVG, skip PNG.")
-    args = parser.parse_args()
+    args = build_parser().parse_args()
+    if args.size:
+        sizes = (args.size,)
+    else:
+        sizes = normalize.parse_sizes(args.sizes)
+    variant = args.variant
+    if args.style:  # legacy flag wins only when --variant was left at auto
+        variant = args.style if variant == "auto" else variant
 
-    if PROXIES:
-        print(f"[info] Using proxy: {PROXIES.get('https') or PROXIES.get('http')}", file=sys.stderr)
+    proxy = net.proxy_info()
+    if proxy:
+        print(f"[info] using proxy: {proxy}", file=sys.stderr)
+    print(
+        f"[info] renderer: {render.renderer_name()}  sizes: {sizes}  variant: {variant}",
+        file=sys.stderr,
+    )
 
-    source, slug = parse_ref(args.ref)
-    name = safe_name(slug)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+    session = net.session()
 
-    svg_text, brand_color = fetch_svg(source, slug, args.style, args.color)
+    entries: list[dict] = []
+    failures: list[dict] = []
+    used_names: set[str] = set()
 
-    svg_path = out_dir / f"{name}.svg"
-    svg_path.write_text(svg_text, encoding="utf-8")
-    print(f"SVG: {svg_path.resolve()}")
+    for ref in args.refs:
+        try:
+            candidate = sources.resolve_ref(ref, session, prefer_variant=variant)
+            fetched = svgmod.fetch_candidate(
+                candidate, variant=variant, color=args.color, sess=session
+            )
+            if fetched["note"]:
+                print(f"[info] {ref}: {fetched['note']}", file=sys.stderr)
 
-    if not args.svg_only:
-        png_path = out_dir / f"{name}.png"
-        render_png(svg_text, png_path, args.size)
-        print(f"PNG: {png_path.resolve()}")
+            if candidate.get("auto_resolved"):
+                # `fetch_icon.py aws` should produce aws.png, not the source's
+                # long official title.
+                base = sources.safe_name(ref)
+            else:
+                base = sources.safe_name(
+                    candidate["title"] or candidate["meta"].get("name", "logo")
+                )
+            stem, n = base, 2
+            while stem in used_names:
+                stem, n = f"{base}-{n}", n + 1
+            used_names.add(stem)
+            suffix = SUFFIX.get(variant, "")
 
-    if brand_color:
-        print(f"Brand color: {brand_color}")
+            svg_path = None
+            if not args.png_only:
+                svg_path = out_dir / f"{stem}{suffix}.svg"
+                svgmod.writes_svg(fetched["svg"], svg_path)
+
+            png_paths: list[Path] = []
+            stats = None
+            if not args.svg_only:
+                raw_png = render.render_bytes(fetched["svg"], max(sizes))
+                from io import BytesIO
+
+                from PIL import Image
+
+                img = Image.open(BytesIO(raw_png)).convert("RGBA")
+                normalized = normalize.normalize(
+                    img,
+                    padding=args.padding,
+                    canvas=max(sizes),
+                    trimming=not args.no_trim,
+                )
+                png_paths = normalize.save_sizes(
+                    normalized, out_dir, stem, sizes, suffix=suffix
+                )
+                stats = normalize.alpha_stats(normalized)
+
+            entry = {
+                "ref": ref,
+                "title": candidate["title"],
+                "source": candidate["source"],
+                "variant": variant,
+                "native_variant": fetched["native_variant"],
+                "recolored": fetched["recolored"],
+                "brand_color": fetched["brand_color"],
+                "svg": str(svg_path.resolve()) if svg_path else None,
+                "png": [str(p.resolve()) for p in png_paths],
+                "note": fetched["note"],
+                "stats": stats,
+            }
+            entries.append(entry)
+            for p in png_paths:
+                print(f"PNG: {p.resolve()}")
+            if svg_path:
+                print(f"SVG: {svg_path.resolve()}")
+            if fetched["brand_color"]:
+                print(f"    brand color: {fetched['brand_color']}")
+        except Exception as exc:  # noqa: BLE001 - keep going in batch mode
+            failures.append({"ref": ref, "error": str(exc)})
+            print(f"[error] {ref}: {exc}", file=sys.stderr)
+
+    if entries and args.sheet:
+        try:
+            items = [
+                {
+                    "image": Path(e["png"][0]) if e["png"] else None,
+                    "label": e["title"],
+                    "sub": e["source"]
+                    + (f" {e['variant']}" if e["variant"] != "color" else ""),
+                }
+                for e in entries
+            ]
+            sheet_path = make_sheet(
+                items,
+                args.sheet,
+                cell=220,
+                theme=args.sheet_theme,
+                title="Fetched logos",
+            )
+            print(f"[info] contact sheet: {sheet_path.resolve()}", file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[warn] could not draw contact sheet: {exc}", file=sys.stderr)
+
+    manifest = {
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "output_dir": str(out_dir.resolve()),
+        "sizes": list(sizes),
+        "padding": args.padding,
+        "variant": variant,
+        "renderer": render.renderer_name(),
+        "logos": entries,
+        "failures": failures,
+    }
+    manifest_path = Path(args.manifest) if args.manifest else out_dir / "logos.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    if manifest_path.exists():
+        # Merge with what is already there so repeated batch runs accumulate.
+        try:
+            previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+            old_logos = previous.get("logos") or []
+        except (OSError, ValueError):
+            old_logos = []
+        incoming = {(e["ref"], e["variant"]) for e in entries}
+        manifest["logos"] = [
+            e for e in old_logos if (e.get("ref"), e.get("variant")) not in incoming
+        ] + entries
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    print(f"[info] manifest: {manifest_path.resolve()}", file=sys.stderr)
+
+    if args.json:
+        print(json.dumps(manifest, indent=2, ensure_ascii=False))
+
+    if failures:
+        print(
+            f"[error] {len(failures)} of {len(args.refs)} refs failed", file=sys.stderr
+        )
+        return 1
     return 0
 
 

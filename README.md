@@ -6,8 +6,8 @@
 
 | 技能 | 作用 | 依赖 |
 |---|---|---|
-| [`create-icon`](skills/create-icon/) | 用可配置的文生图模型（MiniMax / 通义千问 / OpenAI / 兼容网关）生成 PPT 图标，支持预设风格、按示例图学风格、批量出图、透明背景 | `uv` + 一个图片模型 API Key |
-| [`icon-finder`](skills/icon-finder/) | 搜索并下载品牌 / 技术 Logo（Iconify + Simple Icons），同时输出 SVG 与透明 PNG，可直接插进 PPT | `requests`、`cairosvg`、`Pillow`，系统 `cairo` |
+| [`create-icon`](skills/create-icon/) | 用文生图模型（MiniMax / 通义千问 / Seedream / OpenAI / 兼容网关）生成 PPT 图标：16 种预设风格、整套一致出图、抠透明底、统一 1024+512 归一化、质量检查 | `uv` + 一个图片模型 API Key |
+| [`icon-finder`](skills/icon-finder/) | 搜索并下载品牌 / 技术 Logo（Iconify / svgl / lobe-icons / Simple Icons），输出 SVG + 等比不变形、统一留白的 1024+512 透明 PNG，附联系表预览 | `uv`（`requests`、`pillow`、`resvg-py`，无需系统 cairo） |
 | [`skill-manager`](skills/skill-manager/) | 盘点本机已安装的 skills（来源 / 版本 / 路径 / 功能），按需检查上游有无更新，并指导用官方安装器查找、安装、更新、排障 | 仅 `python3` 标准库 + `npx` |
 | [`it-product-research`](skills/it-product-research/) | IT 产品竞品调研与横向对比：需求澄清 → 动态维度 → 加权评分 → 中英双语报告 | 纯 prompt，无脚本 |
 | [`tech-scout-daily`](skills/tech-scout-daily/) | AI 技术侦察日报：抓取多源资讯，按来源/公司/人物索引，附技术价值与商用价值评分 | `requests`、`beautifulsoup4`、`deep-translator`；crawl4ai 服务与 LLM 翻译可选 |
@@ -84,8 +84,8 @@ npx -y skills@latest update -g -y
 
 ```
 skills/
-├── create-icon/     SKILL.md + 4 个 Python 脚本 + styles.json
-├── icon-finder/      SKILL.md + scripts/（搜索 / 下载 / 渲染）
+├── create-icon/     SKILL.md + 脚本（prompt/生成/抠图/归一化/质检）+ styles.json + tests/
+├── icon-finder/     SKILL.md + scripts/（搜索 / 下载 / 渲染 / 归一化）+ logokit/ + tests/
 ├── skill-manager/    SKILL.md + scripts/skillmgr.py + references/
 ├── image-inspector/  SKILL.md + scripts/vision.py + scripts/server.py + references/
 ├── it-product-research/  SKILL.md

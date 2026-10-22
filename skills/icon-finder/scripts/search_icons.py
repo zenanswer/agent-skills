@@ -1,244 +1,201 @@
 #!/usr/bin/env python3
-"""Search brand/technology icons across multiple sources.
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#   "requests>=2.28",
+#   "pillow>=10.0",
+#   "resvg-py>=0.2",
+# ]
+# ///
+"""Search brand/technology logos across four free sources and rank the results.
 
-Sources (queried concurrently):
-  - Iconify `logos` collection: colored official brand logos (CC0).
-  - Simple Icons: ~3400 brand entries with official brand hex color (monochrome).
+Sources: Iconify `logos` (colored official), svgl (curated, native light/dark +
+wordmarks), lobe-icons (AI brands), Simple Icons (monochrome + brand hex).
 
-Proxy: set HTTPS_PROXY / HTTP_PROXY environment variables.
-
-Output: JSON array of candidates to stdout. Each candidate:
-  {
-    "source": "iconify" | "simpleicons",
-    "id": "<fetch slug, e.g. 'logos:aws' or 'amazonwebservices'>",
-    "title": "Human readable name",
-    "is_color": true|false,
-    "brand_color": "#RRGGBB" | null,
-    "preview_url": "..."
-  }
+Output is a deterministic JSON array on stdout. Human-facing hints go to stderr.
 
 Usage:
-  python search_icons.py "<query>" [--style color|mono] [--limit 10]
+  uv run scripts/search_icons.py "aws"
+  uv run scripts/search_icons.py "k8s" --style mono
+  uv run scripts/search_icons.py "deepseek" --sheet /tmp/candidates.png
+  uv run scripts/search_icons.py "AWS, K8s, React" --limit 5
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
-import re
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any
+from pathlib import Path
 
-import requests
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-ICONIFY_SEARCH_URL = "https://api.iconify.design/search"
-ICONIFY_SVG_URL = "https://api.iconify.design/{icon}.svg"
-SIMPLEICONS_CDN_URL = "https://cdn.simpleicons.org/{slug}{color}"
-SIMPLEICONS_JSON_URL = "https://cdn.jsdelivr.net/npm/simple-icons@latest/_data/simple-icons.json"
+from logokit import cache, net, sources
+from logokit.sheet import sheet_from_candidates
 
-REQUEST_TIMEOUT = 30
-
-
-def get_proxy() -> dict[str, str] | None:
-    """Build a requests proxies dict from HTTPS_PROXY / HTTP_PROXY env vars."""
-    proxies: dict[str, str] = {}
-    for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
-        val = os.environ.get(var)
-        if val:
-            scheme = "https" if var.lower().startswith("https") else "http"
-            proxies.setdefault(scheme, val)
-    return proxies or None
+SUGGESTIONS = """\
+Try one of:
+  - A common abbreviation: k8s -> kubernetes, tf -> terraform, gcp -> google cloud
+  - A shorter/broader keyword: "elastic" instead of "elasticsearch-stack"
+  - The full brand name: "amazon web services" instead of "aws"
+If nothing matches, the brand may not be in any free icon collection yet."""
 
 
-PROXIES = get_proxy()
-
-ABBREVIATIONS: dict[str, str] = {
-    "k8s": "kubernetes",
-    "tf": "terraform",
-    "gcp": "google cloud",
-    "eks": "amazon eks",
-    "ecs": "amazon ecs",
-    "rds": "amazon rds",
-    "s3": "amazon s3",
-    "elk": "elasticsearch",
-    "pg": "postgresql",
-    "mongo": "mongodb",
-    "node": "node.js",
-    "vue": "vue.js",
-    "ts": "typescript",
-    "js": "javascript",
-    "gh": "github",
-    "gl": "gitlab",
-    "pwsh": "powershell",
-}
-
-
-def make_session() -> requests.Session:
-    s = requests.Session()
-    if PROXIES:
-        s.proxies.update(PROXIES)
-    return s
-
-
-def normalize(query: str) -> str:
-    return re.sub(r"\s+", "", query.strip().lower())
-
-
-def compute_si_slug(title: str) -> str:
-    """Compute the Simple Icons slug from a title.
-
-    Simple Icons slugs are the title lowercased with all non-alphanumeric
-    characters removed (e.g. "Node.js" -> "nodedotjs", "Google Cloud" ->
-    "googlecloud", ".ENV" -> "env").
-    """
-    s = title.lower()
-    s = re.sub(r"[^a-z0-9]+", "", s)
-    return s
-
-
-def slugify_query(query: str) -> str:
-    return compute_si_slug(query)
-
-
-def search_iconify(query: str, limit: int) -> list[dict[str, Any]]:
-    """Search the Iconify `logos` collection (colored official brand logos)."""
-    candidates: list[dict[str, Any]] = []
-    session = make_session()
-    try:
-        resp = session.get(
-            ICONIFY_SEARCH_URL,
-            params={"query": query, "prefix": "logos", "limit": str(limit)},
-            timeout=REQUEST_TIMEOUT,
+def parse_sources(spec: str | None) -> list[str]:
+    if not spec or spec == "all":
+        return ["iconify", "svgl", "lobeicons", "simpleicons"]
+    wanted = [s.strip().lower() for s in spec.split(",") if s.strip()]
+    unknown = [s for s in wanted if s not in sources.SOURCE_PRIORITY]
+    if unknown:
+        raise SystemExit(
+            f"ERROR: unknown source(s) {unknown}. Use: {', '.join(sources.SOURCE_PRIORITY)}"
         )
-        resp.raise_for_status()
-        data = resp.json()
-        icons = data.get("icons", [])
-        for icon_id in icons[:limit]:
-            name = icon_id.split(":", 1)[-1]
-            display = name.replace("-", " ").title()
-            candidates.append({
-                "source": "iconify",
-                "id": icon_id,
-                "title": display,
-                "is_color": True,
-                "brand_color": None,
-                "preview_url": ICONIFY_SVG_URL.format(icon=icon_id),
-            })
-    except (requests.RequestException, ValueError) as exc:
-        print(f"[warn] Iconify search failed: {exc}", file=sys.stderr)
-    return candidates
+    return wanted
 
 
-def search_simpleicons(query: str, limit: int) -> list[dict[str, Any]]:
-    """Search Simple Icons by matching computed slugs/titles against the query."""
-    candidates: list[dict[str, Any]] = []
-    session = make_session()
-    try:
-        resp = session.get(SIMPLEICONS_JSON_URL, timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
-        data = resp.json()
-        # The Simple Icons JSON is a flat list of entry dicts, NOT an object
-        # with an "icons" key. Each entry has: title, hex, source, optional aliases.
-        icons = data if isinstance(data, list) else data.get("icons", [])
-        q_norm = normalize(query)
-        q_slug = slugify_query(query)
-        scored: list[tuple[int, dict[str, Any]]] = []
-        for entry in icons:
-            title = entry.get("title", "")
-            slug = compute_si_slug(title)
-            aliases = entry.get("aliases", {}) or {}
-            aka_list = aliases.get("aka", []) or []
-            dup_list = [d.get("title", "") for d in (aliases.get("dup", []) or [])]
-            all_names = [title] + aka_list + dup_list
-            score = 0
-            if slug == q_slug:
-                score = 100
-            elif slug.startswith(q_slug):
-                score = 80
-            elif q_slug and q_slug in slug:
-                score = 60
-            else:
-                for name in all_names:
-                    if normalize(name) == q_norm:
-                        score = 90
-                        break
-                    elif q_norm and q_norm in name.lower():
-                        score = max(score, 40)
-            if score > 0:
-                hex_color = entry.get("hex", "")
-                brand_color = f"#{hex_color}" if hex_color else None
-                scored.append((score, {
-                    "source": "simpleicons",
-                    "id": slug,
-                    "title": title,
-                    "is_color": False,
-                    "brand_color": brand_color,
-                    "preview_url": SIMPLEICONS_CDN_URL.format(slug=slug, color=""),
-                }))
-        scored.sort(key=lambda x: (-x[0], x[1]["title"].lower()))
-        candidates = [c for _, c in scored[:limit]]
-    except (requests.RequestException, ValueError) as exc:
-        print(f"[warn] Simple Icons search failed: {exc}", file=sys.stderr)
-    return candidates
-
-
-def dedupe(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Remove obvious duplicates preferring colored/iconify sources."""
-    seen: dict[str, dict[str, Any]] = {}
-    priority = {"iconify": 0, "simpleicons": 1}
-    for c in candidates:
-        key = c["title"].lower()
-        existing = seen.get(key)
-        if existing is None or priority.get(c["source"], 9) < priority.get(existing["source"], 9):
-            seen[key] = c
-    return list(seen.values())
+def print_table(cands: list[dict]) -> None:
+    print(f"{'#':<3} {'TITLE':<30} {'SOURCE':<12} {'COLOR':<14} {'SCORE':<6} ID")
+    print("-" * 96)
+    for i, c in enumerate(cands, 1):
+        color = c.get("brand_color") or ("multicolor" if c["is_color"] else "-")
+        variants = ",".join(c.get("variants", []))
+        print(
+            f"{i:<3} {c['title'][:29]:<30} {c['source']:<12} {color:<14} {c['score']:<6} {c['id']}"
+        )
+        if variants:
+            print(f"{'':<3} {'':<30} variants: {variants}")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Search brand/technology icons across sources.")
-    parser.add_argument("query", help="Brand or technology name (e.g. 'aws', 'kubernetes').")
-    parser.add_argument("--style", choices=["color", "mono"], default="color",
-                        help="Preferred style (affects ordering; default color).")
-    parser.add_argument("--limit", type=int, default=10, help="Max candidates per source.")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(
+        description="Search brand/technology logos across Iconify, svgl, lobe-icons and Simple Icons.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument(
+        "query", nargs="*", help="Brand/technology name(s), e.g. aws kubernetes"
+    )
+    ap.add_argument(
+        "--style",
+        choices=["color", "mono"],
+        default="color",
+        help="Preferred style, affects ordering (default: color)",
+    )
+    ap.add_argument(
+        "--limit", type=int, default=10, help="Max candidates per source (default 10)"
+    )
+    ap.add_argument(
+        "--source",
+        default="all",
+        help="Comma list: iconify,svgl,lobeicons,simpleicons (default all)",
+    )
+    ap.add_argument(
+        "--collection",
+        default="logos",
+        help="Iconify collection(s) to search, comma separated (default logos)",
+    )
+    ap.add_argument(
+        "--all", action="store_true", help="Keep duplicates from different sources"
+    )
+    ap.add_argument(
+        "--table", action="store_true", help="Print a human table instead of JSON"
+    )
+    ap.add_argument(
+        "--sheet", help="Write a labelled contact sheet PNG of the candidates"
+    )
+    ap.add_argument("--sheet-theme", choices=["light", "dark"], default="light")
+    ap.add_argument("--compact", action="store_true", help="Single-line JSON")
+    ap.add_argument(
+        "--cache-info", action="store_true", help="Show cache status and exit"
+    )
+    args = ap.parse_args()
 
-    if PROXIES:
-        print(f"[info] Using proxy: {PROXIES.get('https') or PROXIES.get('http')}", file=sys.stderr)
+    if args.cache_info:
+        print(json.dumps(cache.cache_info(), indent=2))
+        return 0
+    if not args.query:
+        ap.error("give at least one query, or use --cache-info")
 
-    query = args.query
-    expanded = ABBREVIATIONS.get(query.strip().lower())
-    if expanded:
-        print(f"[info] '{query}' expanded to '{expanded}'", file=sys.stderr)
-        query = expanded
+    proxy = net.proxy_info()
+    if proxy:
+        print(f"[info] using proxy: {proxy}", file=sys.stderr)
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = {
-            pool.submit(search_iconify, query, args.limit): "iconify",
-            pool.submit(search_simpleicons, query, args.limit): "simpleicons",
-        }
-        all_candidates: list[dict[str, Any]] = []
-        for fut in as_completed(futures):
-            all_candidates.extend(fut.result())
+    collections = tuple(c.strip() for c in args.collection.split(",") if c.strip())
+    wanted = parse_sources(args.source)
 
-    all_candidates = dedupe(all_candidates)
-    all_candidates.sort(key=lambda c: (
-        0 if c["is_color"] and args.style == "color" else 1,
-        {"iconify": 0, "simpleicons": 1}.get(c["source"], 9),
-        c["title"].lower(),
-    ))
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for raw_query in args.query:
+        query, expansion = sources.expand_query(raw_query)
+        if expansion:
+            print(f"[info] {expansion}", file=sys.stderr)
+        # Search the raw wording too: Iconify's index does not understand
+        # long expanded phrases like "amazon web services" even when svgl does.
+        queries = [query] if query == raw_query else [raw_query, query]
+        pool: list[dict] = []
+        for q in queries:
+            pool.extend(
+                sources.search_all(
+                    q,
+                    limit=max(1, args.limit),
+                    collections=collections,
+                    sources=wanted,
+                    style=args.style,
+                    show_all=args.all,
+                )
+            )
+        for cand in pool:
+            cand["query"] = raw_query
+        for cand in sources.dedupe_and_rank(pool, style=args.style, show_all=args.all):
+            key = sources.dedupe_key(cand)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(cand)
 
-    print(json.dumps(all_candidates, indent=2, ensure_ascii=False))
-    if not all_candidates:
+    if merged:
+        top = merged[0]
         print(
-            f"No icons found for '{args.query}'. Try:\n"
-            "  - A common abbreviation (e.g. k8s -> kubernetes, tf -> terraform)\n"
-            "  - A shorter/broader keyword (e.g. 'elastic' instead of 'elasticsearch-stack')\n"
-            "  - The full brand name (e.g. 'amazon web services' instead of 'aws')\n"
-            "If still nothing, the brand may not be in any free icon collection yet.",
+            f"[info] best match: {top['title']} ({top['id']}, score {top['score']}, "
+            f"confidence {top['confidence']})",
             file=sys.stderr,
         )
+        if top["confidence"] >= 0.8 and (
+            len(merged) == 1 or merged[0]["score"] - merged[1]["score"] >= 8
+        ):
+            print(
+                "[info] high confidence - safe to fetch without asking",
+                file=sys.stderr,
+            )
+
+    if args.sheet and merged:
+        try:
+            sheet_items = merged
+            if len(args.query) > 1:
+                grouped: dict[str, list[dict]] = {}
+                for cand in merged:
+                    grouped.setdefault(cand.get("query", ""), []).append(cand)
+                sheet_items = [c for q in args.query for c in grouped.get(q, [])[:4]]
+            path = sheet_from_candidates(
+                sheet_items[: min(len(sheet_items), 12)],
+                args.sheet,
+                size=200,
+                theme=args.sheet_theme,
+                title=f"Logo candidates: {', '.join(args.query)}",
+            )
+            print(f"[info] contact sheet: {path.resolve()}", file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[warn] could not draw contact sheet: {exc}", file=sys.stderr)
+
+    if args.table:
+        print_table(merged)
+    else:
+        print(
+            json.dumps(merged, indent=None if args.compact else 2, ensure_ascii=False)
+        )
+
+    if not merged:
+        print(f"No icons found for '{', '.join(args.query)}'.", file=sys.stderr)
+        print(SUGGESTIONS, file=sys.stderr)
         return 1
     return 0
 

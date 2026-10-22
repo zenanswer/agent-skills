@@ -1,144 +1,165 @@
 # Icon Finder
 
-Search and fetch brand/technology logos (open-source software, cloud services, tech companies) and render them as SVG + PNG for use in presentations, documents, and web pages.
+Search and fetch brand/technology logos and turn them into slide-ready assets:
+SVG plus transparent PNGs normalized to a square canvas with identical padding.
 
 ## Features
 
-- **Two free icon sources, no API keys required:**
-  - [Iconify](https://iconify.design) `logos` collection — ~1900 colored official brand logos (CC0)
-  - [Simple Icons](https://simpleicons.org) — ~3400 monochrome brand icons with official brand colors
-- **Dual format output:** every icon is rendered as both SVG (vector) and PNG (transparent background, configurable size)
-- **Color-first by default:** fetches the official colored logo; falls back to brand-color rendering for monochrome-only brands
-- **Monochrome mode:** render all logos in a single uniform color (e.g. all white for dark slides)
-- **Abbreviation expansion:** `k8s` → kubernetes, `tf` → terraform, `gcp` → google cloud, and more
-- **Smart no-results guidance:** when a brand isn't found, prints actionable suggestions
-- **Trademark-aware:** some brands (AWS, Azure, Vue.js, Java) are excluded from Simple Icons CDN for legal reasons — the fetch script detects this and suggests the Iconify alternative
+- **Four free sources, no API keys:**
+  - [Iconify](https://iconify.design) `logos` — ~2000 colored official brand logos (CC0)
+  - [svgl](https://svgl.app) — ~670 curated SVGs, many with native light/dark and wordmark variants
+  - [lobe-icons](https://github.com/lobehub/lobe-icons) — ~976 AI/tech brand marks (OpenAI, Claude, DeepSeek, Qwen, ...)
+  - [Simple Icons](https://simpleicons.org) — ~3300 monochrome marks with official brand hex colors
+- **Aspect ratio preserved** — wordmarks stay wide instead of being squashed into a square
+- **Consistent visual weight** — trim → 8% padding → centered square → export at 1024 + 512 px
+- **Deterministic ranking** — same query, same order; no `as_completed` races
+- **Real recoloring** — mono/dark/light variants via injected CSS, not regex `fill=` patching
+- **Contact sheets** — one labelled PNG grid to eyeball candidates or results
+- **Batch + manifest** — fetch many logos in one call, emit `logos.json` for downstream tools
+- **Zero install friction** — PEP 723 scripts; `uv run` provides `requests`, `pillow`, `resvg-py`
 
-## Project Structure
-
-```
-icon-finder/
-├── SKILL.md                  # Skill metadata + workflow (read by opencode agent)
-└── scripts/
-    ├── search_icons.py       # Multi-source keyword search → JSON candidates
-    ├── fetch_icon.py         # Download SVG + render PNG (transparent background)
-    └── requirements.txt      # Python dependencies
-```
-
-## Prerequisites
-
-### System dependencies
+## Quick start
 
 ```bash
-# macOS — cairo is needed by cairosvg for PNG rendering
-brew install cairo
+cd ~/.agents/skills/icon-finder
 
-# Alternative renderer (optional, used as fallback if cairosvg is unavailable)
-brew install librsvg
+# search (JSON on stdout, hints on stderr)
+uv run scripts/search_icons.py "aws"
+
+# search with a visual preview
+uv run scripts/search_icons.py "openai" "k8s" "react" --sheet /tmp/candidates.png
+
+# fetch: bare names are auto-resolved
+uv run scripts/fetch_icon.py aws kubernetes deepseek claude --out ./logos --sheet ./logos/preview.png
+
+# monochrome / dark-slide variants
+uv run scripts/fetch_icon.py svgl:openai --variant dark
+uv run scripts/fetch_icon.py iconify:logos:aws --variant mono --color "#FFFFFF"
+
+# vectors only, or one specific size
+uv run scripts/fetch_icon.py aws --svg-only
+uv run scripts/fetch_icon.py aws --size 512
 ```
 
-### Python dependencies
+Output:
 
-```bash
-# Create a virtualenv (recommended, avoids PEP 668 issues)
-python3 -m venv .venv
-
-# Install dependencies
-.venv/bin/pip install -r icon-finder/scripts/requirements.txt
+```
+logos/
+├── aws.svg            # vector (original or recolored)
+├── aws.png            # 1024×1024 transparent, 8% padding
+├── aws@512.png        # 512×512
+├── kubernetes.png
+├── logos.json         # manifest: paths, source, brand color, alpha stats
+└── preview.png        # optional contact sheet
 ```
 
-Dependencies: `requests`, `cairosvg`, `Pillow`
-
-## Usage
-
-### Search for icons
-
-```bash
-python scripts/search_icons.py "aws"
-python scripts/search_icons.py "k8s"          # auto-expanded to "kubernetes"
-python scripts/search_icons.py "deepseek" --limit 5
-```
-
-Output is a JSON array of candidates:
+## Search output
 
 ```json
 [
   {
     "source": "iconify",
-    "id": "logos:aws",
-    "title": "Aws",
+    "id": "iconify:logos:aws",
+    "title": "AWS",
     "is_color": true,
     "brand_color": null,
-    "preview_url": "https://api.iconify.design/logos:aws.svg"
+    "variants": [],
+    "preview_url": "https://api.iconify.design/logos/aws.svg",
+    "score": 100,
+    "confidence": 1.0
   }
 ]
 ```
 
-### Fetch and render
+Fields:
 
-```bash
-# Colored logo (default), 512px PNG, output to ./logos/
-python scripts/fetch_icon.py "iconify:logos:aws" --out ./logos --size 512 --style color
+| Field | Meaning |
+|---|---|
+| `source` | `iconify` / `svgl` / `lobeicons` / `simpleicons` |
+| `id` | Reference to pass to `fetch_icon.py` |
+| `is_color` | Multi-color official logo vs monochrome mark |
+| `brand_color` | Official hex (Simple Icons only) |
+| `variants` | `color`, `mono`, `light`, `dark`, `wordmark` available for this entry |
+| `score` | 0–100 match score; `confidence` is `score/100` |
 
-# Monochrome, rendered in white (for dark slides)
-python scripts/fetch_icon.py "iconify:logos:aws" --out ./logos --style mono --color "#FFFFFF"
+Ranking is `(score, color-first, source priority, title)` — stable across runs.
+Duplicates from different sources are collapsed per `(brand, color|mono)` so the
+monochrome option stays visible.
 
-# SVG only (skip PNG rendering)
-python scripts/fetch_icon.py "iconify:logos:aws" --out ./logos --svg-only
-```
-
-Each fetch produces two files:
-- `<name>.svg` — original vector file
-- `<name>.png` — transparent-background raster at the requested size
-
-### Options
+## Fetch options
 
 | Flag | Default | Description |
-|------|---------|-------------|
-| `--out` | `./logos` | Output directory (created if missing) |
-| `--size` | `512` | PNG long-edge size in pixels |
-| `--style` | `color` | `color` (official colors) or `mono` (single color) |
-| `--color` | brand color | Hex color for mono mode (e.g. `#FFFFFF`) |
-| `--svg-only` | off | Skip PNG rendering, output SVG only |
+|---|---|---|
+| `--out, -o` | `./logos` | Output directory |
+| `--sizes` | `1024,512` | Square sizes; largest keeps the plain filename |
+| `--size` | – | Single-size shorthand |
+| `--variant` | `auto` | `auto`/`color`/`mono`/`light`/`dark`/`wordmark` |
+| `--style` | – | Legacy alias for `--variant` (`color`/`mono`) |
+| `--color` | brand hex | Target color for mono/dark/light |
+| `--padding` | `0.08` | Padding per side (canvas ratio) |
+| `--no-trim` | off | Keep source whitespace |
+| `--svg-only` / `--png-only` | off | Emit only one format |
+| `--sheet` | – | Contact sheet path |
+| `--manifest` | `<out>/logos.json` | Manifest path (merged across runs) |
+| `--json` | off | Also print the manifest to stdout |
 
-### Proxy
+Ref formats accepted by `fetch_icon.py`:
 
-If you're behind a proxy, set the standard environment variables:
-
-```bash
-export HTTPS_PROXY=http://127.0.0.1:7897
-export HTTP_PROXY=http://127.0.0.1:7897
+```
+iconify:logos:aws   iconify:aws   logos/aws
+svgl:amazon-web-services
+lobeicons:openai-color
+simpleicons:github
+aws                       # bare name → auto search, best match
+https://example.com/x.svg  # direct URL
 ```
 
-The scripts will route all requests through the proxy and print `[info] Using proxy: ...` to stderr.
+## Architecture
+
+```
+icon-finder/
+├── SKILL.md
+├── README.md
+├── scripts/
+│   ├── search_icons.py     # CLI: multi-source search + ranking (+ contact sheet)
+│   ├── fetch_icon.py       # CLI: fetch → normalize → multi-size output + manifest
+│   └── logokit/
+│       ├── net.py          # session, UA, proxy info, retries
+│       ├── cache.py        # ~/.cache/icon-finder JSON cache with stale fallback
+│       ├── sources.py      # 4 source adapters, scoring, deterministic ranking
+│       ├── svg.py          # fetch, color analysis, CSS-injection recolor
+│       ├── render.py       # resvg-py → cairosvg → rsvg-convert (aspect preserved)
+│       ├── normalize.py    # trim, 8% padding, square canvas, multi-size export
+│       └── sheet.py        # labelled contact sheets
+└── tests/
+    └── smoke.py            # 32 offline assertions, no network needed
+```
+
+## Tests
+
+```bash
+uv run tests/smoke.py
+```
+
+Covers slug/title handling, scoring and fuzzy-match guards, ref parsing, recolor
+correctness (`fill="none"`, inline styles, strokes), aspect-preserving render,
+normalization geometry, multi-size output and contact-sheet layout.
 
 ## Install
 
-This skill ships in [`zenanswer/agent-skills`](https://github.com/zenanswer/agent-skills). Install it with the official skills CLI:
-
 ```bash
-npx -y skills@latest add zenanswer/agent-skills -g -s icon-finder \
-  -a opencode claude-code -y
+npx -y skills@latest add zenanswer/agent-skills -g -s icon-finder -a opencode claude-code -y
+npx -y skills@latest update -g icon-finder -y
 ```
 
-- Files land in `~/.agents/skills/icon-finder`; other agent directories are symlinked automatically.
-- Update with `npx -y skills@latest update -g icon-finder -y`, remove with `npx -y skills@latest remove -g icon-finder -y`.
-- Do not edit the installed copy — `update` overwrites it; send changes to the source repo instead.
+The installed copy at `~/.agents/skills/icon-finder` is overwritten by
+`update`; send changes to the source repo instead.
 
-### Verify installation
+## Notes
 
-After installing, restart opencode. The skill should appear in the available skills list. You can test it by asking:
-
-> "帮我找一下 AWS 和 Kubernetes 的 logo"
-
-The agent will search, present candidates, fetch the selected icons, and output SVG + PNG files ready for your slides.
-
-### Dependencies note for deployment
-
-The scripts need Python packages (`requests`, `cairosvg`, `Pillow`) and the system `cairo` library. If opencode runs with a specific Python, make sure these are installed in that environment. The SKILL.md instructs the agent to use the project `.venv/` if present, or install deps otherwise.
-
-```bash
-python3 -m pip install -r ~/.agents/skills/icon-finder/scripts/requirements.txt
-# Debian/Ubuntu: sudo apt install libcairo2
-# macOS: brew install cairo
-```
+- Rendering uses `resvg-py` (pure pip wheel). If it is unavailable, the scripts
+  fall back to `cairosvg` (needs `libcairo`) and then `rsvg-convert`.
+- Brand indexes are cached in `~/.cache/icon-finder`; set
+  `ICON_FINDER_NO_CACHE=1` to bypass or `ICON_FINDER_CACHE_DIR` to relocate.
+- Logos are trademarks of their owners; use them for identification and follow
+  each brand's guidelines when redistributing.

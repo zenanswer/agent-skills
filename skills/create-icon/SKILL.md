@@ -1,201 +1,195 @@
 ---
 name: create-icon
-description: Generate professional icons for PPT slides and presentations using a configurable text-to-image model (MiniMax, Aliyun Qwen, OpenAI, or any OpenAI-compatible gateway). Use when the user wants to create, design, or generate icons for slides, decks, or presentations. Supports preset styles (flat, line, 3D, gradient, etc.), custom style from example images, batch generation, and transparent background output. Triggers on requests like "generate an icon for my PPT", "create slide icons", "make presentation icons", "design icons for slides".
+description: "Generate consistent, slide-ready icons with a text-to-image model (MiniMax, Aliyun Qwen, Volcengine Seedream, OpenAI, or any OpenAI-compatible gateway). Compiles a real prompt (subject + style + composition + negative), strips backgrounds without punching holes in the artwork, then trims, pads, centers and exports 1024 + 512 px PNGs plus an icons.json manifest. Use for 'icon for my PPT', 'slide icons', 'icon set', 'transparent PNG icon', 'match this icon style', '生成图标'."
 ---
 
-# Create Icon Skill
+# Create Icon
 
-Generate professional icons for PPT/presentation slides using a configurable text-to-image model.
+Icons that survive being placed next to each other on a slide: same canvas,
+same padding, same visual weight, no white halo, no stretched artwork.
 
-## Supported Providers
+## What it guarantees
 
-| Provider | Default image model | Default VLM | Default host |
-|----------|---------------------|-------------|--------------|
-| `minimax` (default) | `image-01` | `MiniMax-M1` | `https://api.minimaxi.com` |
-| `qwen` | `qwen-image-2.0-pro` | `qwen-vl-max` | `https://dashscope.aliyuncs.com` |
-| `openai` | `dall-e-3` | `gpt-4o` | `https://api.openai.com` |
-| `openai-compatible` | (must set) | (must set) | (must set) |
+- **Prompt is compiled, not concatenated** — four explicit blocks (subject,
+  style, composition, negative), so clauses never fight or repeat and Chinese
+  subjects never get a stray English article.
+- **Every image is normalized** — trimmed to artwork, long edge at 84% of a
+  square canvas (8% padding per side), centered, exported at **1024 + 512**.
+- **Transparent means transparent** — only the background region connected to
+  the border is removed; interior whites (gear holes, cloud fills, bubbles)
+  stay. Edges are de-fringed, so no white halo.
+- **Quality gate** — each icon is checked for empty output, edge contact,
+  off-centering and halo; `--ensure-quality` retries once with a new seed.
 
-Use `uv run generate_icon.py --list-providers` to see them at runtime.
+## Providers
 
-## Prerequisites
+| Provider | Default model | Notes |
+|---|---|---|
+| `minimax` (default) | `image-01` | Cheapest; no negative-prompt field (folded into the prompt) |
+| `qwen` | `qwen-image-3.0-pro` | Negative prompt + `n` up to 6 |
+| `ark` | `doubao-seedream-5-0-pro-260628` | Seedream 5.0, strong icon quality, single image per call |
+| `openai` | `gpt-image-1` | Native transparent background |
+| `openai-compatible` | (set `--model`) | SiliconFlow, DashScope compatible-mode, Ark v3, self-hosted |
 
-- **uv** must be installed (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
-- An API key for one of the supported providers, available via:
-  - Shell environment variables: `ICON_PROVIDER`, `ICON_API_KEY` (plus optional `ICON_API_HOST` / `ICON_MODEL` / `ICON_VLM_MODEL`)
-  - Legacy alias (minimax only): `MINIMAX_API_KEY`, `MINIMAX_API_HOST`
-  - A `.env` file in the skill directory (scripts auto-load it as fallback)
-  - CLI flags: `--provider`, `--api-key`, `--host`, `--model`
+Config precedence: CLI flags > `ICON_*` env > `MINIMAX_*` / `DASHSCOPE_*` /
+`ARK_*` aliases > `.env` in the skill directory > defaults.
 
-Verify the key is set before proceeding:
 ```bash
-echo "provider=${ICON_PROVIDER:-minimax} key=${ICON_API_KEY:-${MINIMAX_API_KEY:-<not set>}}"
+echo "provider=${ICON_PROVIDER:-minimax} key=${ICON_API_KEY:+set}"
 ```
 
-If the key is not set, check for a `.env` file in the skill directory. If neither exists, ask the user to provide it or set `export ICON_API_KEY=<key>` (and `ICON_PROVIDER=<provider>` if not using minimax).
+If the key is missing, check `.env` in the skill directory, or ask the user.
+Never print the key.
 
-## Available Scripts
+## Default workflow (do not over-ask)
 
-All scripts use **PEP 723 inline metadata** and are run via `uv run` with zero manual installation - uv handles dependencies automatically.
+1. **Pick a style.** Default to `flat-color` unless the deck's look suggests
+   otherwise. Only ask when the user clearly cares about visual style.
+2. **Generate straight away.** One subject → `-p`; several → `--set` with a
+   shared style/palette/seed.
+3. **Look at the result.** Read the PNG with your vision capability, or run
+   `check.py`. Fix concrete defects, not vibes.
+4. **Iterate once, then deliver** paths + the manifest.
 
-| Script | Purpose |
-|--------|---------|
-| `generate_icon.py` | Main: generate icons via the configured provider |
-| `analyze_style.py` | Analyze an example icon image to extract its style (uses VLM) |
-| `remove_bg.py` | Post-process: remove solid background to make transparent PNG |
-| `providers.py` | Multi-provider abstraction (image gen + VLM) - shared module |
-| `styles.json` | Preset style templates and common subjects |
-
-## Workflow
-
-### Step 1: Determine the Icon Style
-
-Ask the user which mode they prefer:
-
-**Mode A — Preset Style Selection:**
-
-List the available presets by running:
-```bash
-uv run generate_icon.py --list-styles
-```
-
-Present the styles to the user in a clean table and let them pick one. The presets are:
-
-| Key | Style | Best for |
-|-----|-------|----------|
-| `flat-color` | Flat Color (扁平彩色) | Modern business PPTs |
-| `line-monochrome` | Line Monochrome (线性单色) | Minimalist, easy recolor |
-| `line-color` | Line Color (彩色线性) | Professional, modern |
-| `3d-render` | 3D Render (3D 立体) | Eye-catching, premium |
-| `duotone` | Duotone (双色调) | Stylish, contemporary |
-| `filled-color` | Filled Color (填充彩色) | Bold, strong presence |
-| `isometric` | Isometric (等距视角) | Technical, approachable |
-| `hand-drawn` | Hand Drawn (手绘风格) | Warm, casual |
-| `gradient` | Gradient (渐变风格) | SaaS, vibrant |
-| `minimal-solid` | Minimal Solid (极简实心) | Maximum clarity, bold |
-
-**Mode B — Learn from Example Image:**
-
-If the user provides an example icon image (file path or URL), analyze its style:
-```bash
-uv run analyze_style.py path/to/example_icon.png
-```
-
-This uses the configured provider's VLM (vision language model) to extract a detailed style description. The output includes a `STYLE_PROMPT:` line that can be passed to `generate_icon.py --custom-style`. Pass `--provider`/`--vlm-model` to use a specific backend.
-
-**Alternative:** If you (the agent) have a built-in image understanding capability (e.g. you are a multimodal model), use it directly to analyze the example icon. Extract: overall style, color palette, line characteristics, effects, composition. Then construct a style description and pass it via `--custom-style`.
-
-### Step 2: Confirm Icon Requirements
-
-Ask the user:
-1. **What icon(s)** they need — the subject/semantic meaning (e.g. "growth", "team", "innovation", "rocket", "target"). Use `--list-subjects` for common suggestions:
-   ```bash
-   uv run generate_icon.py --list-subjects
-   ```
-2. **How many** variants (1-9, default 1)
-3. **Background preference:**
-   - Solid white (default, safest for PPT)
-   - Transparent PNG (adds post-processing via `remove_bg.py`)
-   - Other solid color (specify)
-
-### Step 3: Generate the Icon(s)
-
-**Using a preset style:**
-```bash
-uv run generate_icon.py \
-  --prompt "growth arrow" \
-  --style flat-color \
-  -n 3 \
-  --background white \
-  --output ./output
-```
-
-**Using a custom style (from example analysis or user description):**
-```bash
-uv run generate_icon.py \
-  --prompt "team collaboration" \
-  --custom-style "isometric, pastel colors, soft shadow, rounded shapes" \
-  -n 2 \
-  --output ./output
-```
-
-**Generating transparent PNG icons:**
-```bash
-uv run generate_icon.py \
-  --prompt "innovation lightbulb" \
-  --style flat-color \
-  --transparent \
-  --output ./output
-```
-The `--transparent` flag automatically runs `remove_bg.py` on each generated image.
-
-**Dry run (preview the prompt without calling the API):**
-```bash
-uv run generate_icon.py --prompt "growth" --style flat-color --dry-run
-```
-
-**Using a non-default provider (e.g. Aliyun Qwen):**
-```bash
-uv run generate_icon.py \
-  --prompt "growth arrow" \
-  --style flat-color \
-  --provider qwen \
-  --model qwen-image-2.0-pro \
-  --api-key sk-xxxxx
-```
-Provider/model/host/api-key can all be set via `ICON_PROVIDER` / `ICON_MODEL` / `ICON_API_HOST` / `ICON_API_KEY` env vars (or `.env` file) so you don't have to pass them every run.
-
-### Step 4: Review and Iterate
-
-After generation, the script prints the saved file paths. **Review the generated icons** by reading the image files with your vision capability.
-
-If the result is not satisfactory:
-- **Wrong style?** Try a different `--style` key or adjust `--custom-style`
-- **Too much/little detail?** Add terms like "minimal" or "detailed" to the prompt
-- **Wrong colors?** Specify colors explicitly in the prompt, e.g. `--prompt "growth arrow in navy blue and gold"`
-- **Background removal issues?** Adjust tolerance: `uv run remove_bg.py icon.png --tolerance 50`
-
-### Step 5: Deliver
-
-Present the generated icon paths to the user. If generating for a PPT, consider:
-- The icons are 1024×1024 PNG by default — suitable for most slide layouts
-- For transparent PNGs, the `_transparent.png` suffix is added
-- Icons can be resized down in the PPT without quality loss (high-res source)
-
-## Important Notes
-
-- **API costs:** Vary by provider. MiniMax ~0.025 CNY/image; Qwen / OpenAI / gateways - see vendor pricing. Generating multiple variants adds up.
-- **Image format:** Some providers return JPEG, others PNG; `generate_icon.py` always saves as `.png` (re-encoded). For true transparency, use `--transparent` which runs `remove_bg.py`.
-- **No text in icons:** The prompt template includes "no text, no watermark" to prevent the model from adding text to icons. Qwen also gets a `negative_prompt`.
-- **Prompt optimization:** `prompt_optimizer: true` for minimax and `prompt_extend: true` for qwen are enabled by default - the API auto-enhances the prompt.
-- **Reproducibility:** Use `--seed <int>` to get consistent results across runs (minimax, qwen, openai all support it).
-- **Rate limits:** If you hit rate limits, wait a few seconds and retry.
-- **Backward compatibility:** When `ICON_PROVIDER` is unset, it defaults to `minimax` and falls back to `MINIMAX_API_KEY` / `MINIMAX_API_HOST` - existing setups keep working.
-
-## Quick Reference
+### Single icon
 
 ```bash
-# List presets / providers
-uv run generate_icon.py --list-styles
-uv run generate_icon.py --list-providers
-
-# List common subjects
-uv run generate_icon.py --list-subjects
-
-# Generate 3 flat-color growth icons
 uv run generate_icon.py -p "growth arrow" -s flat-color -n 3
-
-# Generate with custom style from example
-STYLE=$(uv run analyze_style.py example.png --output-style-only)
-uv run generate_icon.py -p "target" --custom-style "$STYLE" -n 2
-
-# Generate transparent background icon
 uv run generate_icon.py -p "rocket" -s gradient --transparent
-
-# Remove background from existing image
-uv run remove_bg.py output/icon.png --tolerance 40
-
-# Switch provider on the fly
-uv run generate_icon.py -p "growth" -s flat-color \
-  --provider qwen --model qwen-image-2.0-pro --api-key sk-xxxxx
+uv run generate_icon.py -p "AI 算力" -s line-monochrome -n 2
 ```
+
+### A consistent set (the common case for decks)
+
+```bash
+uv run generate_icon.py \
+  --set "growth,team,innovation,target" \
+  -s flat-color \
+  --palette "#1E3A8A,#F59E0B,#FFFFFF" \
+  --seed 42 \
+  --transparent
+```
+
+All icons share the style block, palette and seed family (`seed+i`), so they
+read as one set. Output includes `icons.json`.
+
+### Learn a style from an example
+
+```bash
+STYLE=$(uv run analyze_style.py example.png --output-style-only)
+uv run generate_icon.py -p "target" --custom-style "$STYLE"
+```
+
+`analyze_style.py` combines a VLM description with **measured** dominant colors
+(Pillow quantization), so hex codes are real rather than guessed. Multiple
+examples are supported: `analyze_style.py a.png b.png`.
+
+### Check and iterate
+
+```bash
+uv run check.py output/*.png --transparent
+```
+
+| Symptom | Fix |
+|---|---|
+| Style is wrong | Different `-s`, or `--custom-style` |
+| Too detailed / busy | Add "minimal, few shapes" to the prompt |
+| Wrong colors | `--palette "#1E3A8A,#F59E0B"` |
+| Icon too small/large in frame | `--padding 0.12` (bigger padding = smaller art) |
+| White halo | `--tolerance 20`, or `--bg-mode chroma` |
+| Interior holes removed | Raise `--tolerance`? No — lower it, or keep `--bg-mode flood` |
+| Faces/text sneaking in | Extend `--negative-prompt` |
+
+## Output
+
+```
+output/
+├── growth.png                1024×1024, normalized
+├── growth@512.png            512×512
+├── growth_transparent.png    when --transparent
+├── growth_transparent@512.png
+└── icons.json                prompt, seed, palette, sizes, stats, issues
+```
+
+`icons.json` is the hand-off contract for a pptx workflow: every entry has
+`files`, `prompt`, `seed`, `stats` and `ok`.
+
+## Presets
+
+| Key | Name | Best for |
+|---|---|---|
+| `flat-color` | Flat Color | Default business decks |
+| `flat-2.0` | Flat 2.0 | Modern layered look |
+| `line-monochrome` | Line Monochrome | Easy to recolor, minimal |
+| `line-color` | Line Color | Professional outlines + accents |
+| `duotone` / `duotone-line` | Duotone | Stylish two-tone |
+| `filled-color` | Filled Color | Bold, high contrast |
+| `minimal-solid` | Minimal Solid | Maximum clarity |
+| `3d-render` | 3D Render | Premium, Apple-like |
+| `clay-3d` | Clay 3D | Friendly, playful |
+| `glass` | Glassmorphism | SaaS landing-page look |
+| `isometric` / `isometric-2.5d` | Isometric | Technical / diagram |
+| `gradient` | Gradient | Vibrant SaaS |
+| `hand-drawn` | Hand Drawn | Warm, human |
+| `notion` | Notion Style | Editorial, calm |
+
+`--list-styles`, `--list-subjects`, `--list-providers`, `--list-backgrounds`.
+
+## Important flags
+
+| Flag | Default | Notes |
+|---|---|---|
+| `-p, --prompt` | – | One subject |
+| `--set` | – | Comma-separated subjects; produces a consistent set |
+| `-n` | 1 | Variants per subject (1–9) |
+| `-s, --style` | `flat-color` | Preset key |
+| `--custom-style` | – | Overrides `-s` |
+| `--palette` | – | Fixed hex colors, strongly recommended for sets |
+| `--seed` | random | Same seed + model = reproducible |
+| `--transparent` | off | Native for `gpt-image-1`, flood-fill otherwise |
+| `--bg-mode` | `auto` | `flood` / `chroma` / `keep` |
+| `--tolerance` | 14 | Background color distance |
+| `--sizes` | `1024,512` | Largest keeps the plain filename |
+| `--padding` | `0.08` | Padding per side |
+| `--no-normalize` | off | Keep the provider image untouched |
+| `--ensure-quality` | off | Retry once on structural defects |
+| `--dry-run` | off | Print compiled prompts, no API call |
+| `--estimate-cost` | off | Approximate cost before spending |
+| `--json` | off | Manifest on stdout |
+| `--concurrency` | 3 | Parallel subjects in `--set` mode |
+| `--provider`, `--model`, `--api-key`, `--host` | – | Per-run overrides |
+
+## Cost
+
+`--estimate-cost` prints an approximate figure. Rough per-image prices:
+MiniMax ~0.025 CNY, Ark/Seedream ~0.2 CNY, Qwen ~0.35 CNY, OpenAI ~0.04 USD.
+Generating 9 variants is cheap; always estimate before a large `--set`.
+
+## Troubleshooting
+
+| Problem | Cause / fix |
+|---|---|
+| `API key not set` | Export `ICON_API_KEY`, use `--api-key`, or create `.env` |
+| `404` / wrong host | Provider host must be the bare base URL; `openai-compatible` needs an explicit `--host` |
+| MiniMax ignores negative prompts | It has no such field; the negative is folded in as `avoid: ...` |
+| `n>1` fails on dall-e-3 | The script loops one call per image automatically |
+| Transparent output has grey fringe | Raise `--tolerance` slightly, or switch `--bg-mode chroma` |
+| Everything looks like a photo | Your provider's prompt optimizer can override the style; try `--provider ark` or a more specific `--custom-style` |
+
+## Files
+
+```
+create-icon/
+├── SKILL.md            this file
+├── generate_icon.py    CLI: prompt -> provider -> normalize -> manifest
+├── promptkit.py        four-block prompt compiler + palette parsing
+├── providers.py        minimax / qwen / ark / openai / compatible + VLM
+├── normalize.py        trim, pad, center, multi-size export
+├── remove_bg.py        flood-fill background removal + de-fringe
+├── check.py            quality gate
+├── analyze_style.py    style + measured palette from example images
+├── styles.json         16 style presets with negatives
+└── tests/smoke.py      49 offline assertions incl. a mock-provider e2e
+```
+
+Run tests with `uv run tests/smoke.py`.

@@ -1,3 +1,5 @@
 requests>=2.28
-cairosvg>=0.5
-Pillow>=9.0
+pillow>=10.0
+resvg-py>=0.2
+# Optional fallback renderer (needs the system libcairo library):
+# cairosvg>=0.5

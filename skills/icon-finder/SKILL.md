@@ -1,126 +1,158 @@
 ---
 name: icon-finder
-description: "Search and fetch brand/technology logos and icons (open-source software, cloud services, tech companies) for use in presentations, documents, and web pages. Use this skill whenever the user needs to find, download, or render logos/icons/brand marks for things like AWS, Kubernetes, React, Azure, Docker, Google Cloud, GitHub, etc. Trigger on phrases like 'find logo', 'get icon', 'search brand icon', 'need the AWS logo', 'download Kubernetes logo', 'logo for my slides/ppt/deck', or any request involving brand/technology logos and icons. Also trigger when a user mentions preparing logos for a pptx/presentation alongside the pptx skill."
+description: "Find, download and normalize brand/technology logos for slides, documents and web pages. Searches Iconify, svgl, lobe-icons and Simple Icons, then renders SVG + square transparent PNGs with identical padding and preserved aspect ratio. Trigger on 'find logo', 'get icon', 'brand icon', 'AWS/Kubernetes/React/DeepSeek/Claude logo', 'logo for my deck/ppt', 'monochrome logos', or when a pptx task needs real logos instead of text."
 ---
 
 # Icon Finder
 
-Search and fetch brand/technology logos across multiple icon sources, rendering both SVG (vector) and PNG (raster, transparent background) so they can be dropped directly into presentations.
+Logo → slide-ready asset pipeline. Four free sources, zero API keys, no system
+libraries (rendering goes through the pip-only `resvg-py`).
 
-## When to use
+## What it guarantees (the part that used to be broken)
 
-- User asks for a logo/icon for a brand, open-source project, or cloud service.
-- User is building a slide deck (often alongside the `pptx` skill) and needs tech/cloud logos.
-- User wants to render an icon in a specific color or size.
+- **Aspect ratio is never distorted.** A 256×153 wordmark stays 256:153; it is
+  fitted into the canvas, not squashed to a square.
+- **One visual weight across a set.** Every asset is trimmed, scaled so its long
+  edge is 86% of the canvas (8% padding per side), centered on a transparent
+  square, then exported at **1024 + 512** px.
+- **Deterministic results.** The same query returns the same order every run.
+- **Real recoloring.** Monochrome/dark variants are produced with an injected
+  stylesheet (`!important`), so inline `style`, `currentColor`, strokes and
+  gradients are all handled.
 
-## Quick Reference
+## Quick reference
 
 | Task | Command |
-|------|---------|
-| Search icons by keyword | `python scripts/search_icons.py "<query>" [--style color\|mono]` |
-| Fetch one icon (SVG+PNG) | `python scripts/fetch_icon.py <source:slug> [--out DIR] [--size 512] [--style color\|mono] [--color HEX]` |
+|---|---|
+| Search + preview sheet | `uv run scripts/search_icons.py "aws" --sheet /tmp/candidates.png` |
+| Fetch one logo (default 1024+512) | `uv run scripts/fetch_icon.py aws` |
+| Fetch several at once | `uv run scripts/fetch_icon.py aws k8s react deepseek -o ./logos` |
+| Monochrome for a dark slide | `uv run scripts/fetch_icon.py svgl:openai --variant dark` |
+| Uniform single color | `uv run scripts/fetch_icon.py aws --variant mono --color "#FFFFFF"` |
+| Native dark/light variant | `uv run scripts/fetch_icon.py svgl:amazon-web-services --variant dark` |
+| Only vectors | `uv run scripts/fetch_icon.py aws --svg-only` |
+| Manifest for downstream tools | `uv run scripts/fetch_icon.py aws k8s --manifest logos.json` |
 
-Run scripts with the project venv Python if dependencies are installed there (e.g. `./../../.venv/bin/python`). Install deps first if missing: see `scripts/requirements.txt`.
-
-## Default behavior (when user gives no specifics)
-
-- **Style**: color-first. Fetch the official colored logo (Iconify `logos` collection). Fall back to Simple Icons brand-color rendering if no colored version exists.
-  - Switch to monochrome when the user says "单色", "monochrome", "mono", "统一颜色", or requests a single specific color.
-- **Output format**: BOTH `.svg` and `.png` (transparent background) for every icon.
-- **Output directory**: `./logos/` (created if missing). The user may override with `--out`.
-- **PNG size**: 512px on the long edge. Override with `--size`.
-- **Naming**: lowercase, hyphenated slug (e.g. `amazon-web-services.png`).
+Scripts are PEP 723: `uv run` installs `requests`, `pillow`, `resvg-py`
+automatically. There is nothing to set up.
 
 ## Workflow
 
-### 1. Understand the request
-
-Parse from the user's message:
-- The brand(s)/technology name(s) wanted (may be multiple: "AWS, K8s, and React").
-- Style preference (default: color). Watch for "单色/mono/uniform color".
-- Output directory (default: `./logos/`).
-- Size if specified.
-
-### 2. Search
-
-Run the search script for each requested brand. Show the user the candidates so they can pick the right one (brand names can be ambiguous, e.g. "Amazon" the company vs "Amazon Web Services").
+### 1. Search
 
 ```bash
-python scripts/search_icons.py "aws"
+uv run scripts/search_icons.py "aws"
+uv run scripts/search_icons.py "openai" "k8s" "react" --sheet /tmp/candidates.png
 ```
 
-Output is JSON: a list of candidates with `source`, `id` (the slug used for fetching), `title`, `is_color`, `brand_color`, and `preview_url`. Candidates from Iconify `logos` (colored, official) are listed first; Simple Icons (monochrome+brand color) next.
+Output is a JSON array on stdout (hints go to stderr). Each candidate:
 
-The search script auto-expands common abbreviations (k8s -> kubernetes, tf -> terraform, gcp -> google cloud, etc.) and prints the expansion to stderr.
-
-### If search returns no results
-
-When `search_icons.py` outputs an empty array `[]` and exits with code 1, it also prints suggestions to stderr. Relay these to the user and try alternatives:
-
-1. **Try a different name or spelling** -- e.g. "elastic stack" -> "elasticsearch", "MS SQL" -> "microsoft sql server".
-2. **Try a shorter keyword** -- partial matches work, so "elastic" finds Elasticsearch-related logos.
-3. **Try the full brand name** -- "amazon web services" instead of "aws".
-
-If repeated attempts still return nothing, the brand is likely not in any free icon collection. Tell the user honestly -- they may need to provide an official SVG file manually.
-
-### 3. Confirm with the user
-
-Present candidates concisely, e.g.:
+```json
+{
+  "source": "iconify",
+  "id": "iconify:logos:aws",
+  "title": "AWS",
+  "is_color": true,
+  "brand_color": null,
+  "variants": [],
+  "preview_url": "https://api.iconify.design/logos/aws.svg",
+  "score": 100,
+  "confidence": 1.0
+}
 ```
-Found 4 candidates for "aws":
-1. [color]    AWS          (iconify:logos:aws)        ← official colored logo
-2. [color]    AWS Lambda   (iconify:logos:aws-lambda)
-3. [mono]     Amazon Web Services (simpleicons:amazonwebservices)  brand color #FF9900
-4. [color]    Amazon       (iconify:logos:amazon)
-```
-Default-recommend the colored exact match (candidate 1). Ask the user to confirm or pick alternatives.
 
-### 4. Fetch and render
+- `source`: `iconify` (official colored), `svgl` (curated, often light/dark +
+  wordmark), `lobeicons` (AI brands), `simpleicons` (monochrome + brand hex).
+- `id`: pass verbatim to `fetch_icon.py`.
+- Abbreviations are expanded (`k8s` → kubernetes, `tf` → terraform, `gcp` →
+  google cloud, `ds` → deepseek, ...).
+
+### 2. Decide — do not over-ask
+
+- `confidence >= 0.8` **and** a clear lead over the runner-up → fetch it
+  directly, then show the result. No confirmation round-trip.
+- Only ask when scores tie, the brand is ambiguous (Amazon the company vs AWS
+  the service), or confidence is low.
+- If a preview sheet was generated, show the image to the user; one look beats
+  a list of slugs.
+
+### 3. Fetch
 
 ```bash
-python scripts/fetch_icon.py "iconify:logos:aws" --out ./logos --size 512 --style color
+uv run scripts/fetch_icon.py "iconify:logos:aws" -o ./logos
 ```
 
-This writes both `aws.svg` and `aws.png` (transparent background) to the output directory. For monochrome style, the PNG is rendered with the brand color (or a user-specified `--color`).
+Bare names are auto-resolved through search, so `fetch_icon.py aws` works.
+Accepted refs: `iconify:logos:aws`, `iconify:aws`, `logos/aws`,
+`svgl:amazon-web-services`, `lobeicons:openai-color`, `simpleicons:github`,
+a direct `https://...svg` URL, or a bare name.
 
-### 5. Hand off
+Output per logo:
 
-Report the absolute paths of the generated files. If the user is working with the `pptx` skill, point out that the PNG paths can be inserted as images in slides.
-
-## Style details
-
-- **color** (default): Use Iconify `logos` collection (already multi-color official logos). If only a Simple Icons (monochrome) result exists, render the PNG filled with the brand's official hex color so it still looks branded, not black.
-- **mono**: Render everything as a single color. Default to the brand color; let the user override with `--color`. Useful when the user wants a uniform look across many logos (e.g. all white on a dark slide). For colored source SVGs, convert to a single fill.
-
-## Output format details
-
-- **SVG**: the original vector file (recolor as needed). Good for scalable embedding.
-- **PNG**: transparent background, rendered at the requested size via `cairosvg`. Best for direct PPT image insertion.
-Both are always produced unless the user asks for only one.
-
-## Proxy
-
-If the user is behind a proxy (common in corporate networks), set the `HTTPS_PROXY` / `HTTP_PROXY` environment variables before running the scripts:
-```bash
-export HTTPS_PROXY=http://your-proxy-host:port
 ```
-When a proxy is active, scripts print `[info] Using proxy: ...` to stderr. If the user reports network errors (timeouts, connection refused), check whether they need a proxy.
-
-## Dependencies
-
-The scripts need Python packages from `scripts/requirements.txt`:
+logos/aws.svg            original (or recolored) vector
+logos/aws.png            1024×1024 transparent, 8% padding, aspect preserved
+logos/aws@512.png        512×512 version
+logos/logos.json         manifest (paths, source, brand color, stats)
 ```
-requests
-cairosvg
-Pillow
-```
-`cairosvg` requires the system `cairo` library (`brew install cairo` on macOS). The skill's fetch script auto-detects available renderers (cairosvg -> rsvg-convert -> error with install instructions) so it degrades gracefully.
 
-Use a virtualenv if the system Python is externally-managed (PEP 668). The project venv at `.venv/` is used if present.
+Add `--sheet preview.png` to get a labelled contact sheet of what was fetched.
 
-## Icon sources
+### 4. Hand off
 
-| Source | Type | Auth | Notes |
-|--------|------|------|-------|
-| Iconify (`logos` collection) | Colored official logos | none | ~1900 brand logos, CC0 |
-| Simple Icons | Monochrome + brand hex | none | ~3400 brands, single-color SVG with official color |
+Report absolute paths. For a deck, prefer the `.png` (transparent background,
+consistent size); keep the `.svg` when the slide needs to scale beyond 1024 px.
+If the user is in a pptx workflow, the manifest is the contract: every entry
+has `png`, `svg`, `title`, `brand_color`.
+
+## Variants
+
+| `--variant` | Behavior |
+|---|---|
+| `auto` / `color` (default) | Official colors. Uses svgl `light` route when the file is split by theme. |
+| `mono` | Single color: `--color`, else the brand hex. Multi-color logos are flattened (a warning is printed). |
+| `dark` | For dark slides: native dark asset if the source has one, otherwise recolored to `#FFFFFF`. |
+| `light` | For light slides; native light asset, otherwise `#111111`. |
+| `wordmark` | Brand wordmark when the source provides one (svgl), else the icon mark. |
+
+Variant suffixes keep files apart: `aws.png`, `aws_mono.png`, `aws_dark.png`.
+
+## Useful flags
+
+| Flag | Default | Why |
+|---|---|---|
+| `--sizes 1024,512` | `1024,512` | Largest keeps the plain filename, others get `@size` |
+| `--size 512` | – | Single-size shorthand |
+| `--padding 0.08` | `0.08` | Padding per side; same value = same visual weight |
+| `--no-trim` | off | Keep the source whitespace instead of trimming to content |
+| `--source iconify,svgl` | all four | Skip slow sources or enforce a house style |
+| `--all` | off | Keep duplicate rows from different sources |
+| `--style mono` | – | Legacy alias for `--variant mono` |
+| `--cache-info` | – | Show cache dir, entry ages (search script) |
+
+Indexes are cached in `~/.cache/icon-finder` (Simple Icons/lobe-icons 7 days,
+svgl 1 day). Offline or rate-limited runs fall back to the stale copy.
+`ICON_FINDER_NO_CACHE=1` bypasses it.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `HTTP 404` for a logo | Wrong source for that brand — re-run search and pick another `id` (e.g. AWS is trademark-excluded from some CDNs). |
+| `No SVG renderer available` | `uv run` should have installed `resvg-py`; check network, or install `librsvg` for `rsvg-convert`. |
+| `mono rendering needs a color` | The brand has no hex in the index; pass `--color "#FFFFFF"`. |
+| Network errors / timeouts | Set `HTTPS_PROXY` / `HTTP_PROXY`; the scripts print the proxy they use. |
+| Logo looks empty | The source SVG uses `currentColor` with no color set; fetch with `--variant mono --color "#000000"`. |
+
+## Sources
+
+| Source | Content | License |
+|---|---|---|
+| Iconify `logos` | ~2000 colored official logos | CC0 |
+| svgl | ~670 curated SVGs, light/dark + wordmarks | CC BY / brand guidelines |
+| lobe-icons | ~976 AI/tech brand marks | MIT |
+| Simple Icons | ~3300 monochrome marks + brand hex | CC0 |
+
+Trademark note: logos remain the property of their owners. Use them for
+identification/reference in decks; follow each brand's guidelines for
+redistribution.
