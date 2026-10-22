@@ -1,0 +1,368 @@
+---
+name: tech-scout-daily
+description: >
+  AI技术侦察每日报纸。从 HuggingFace Papers、LLM Stats、AI News、MIT News、Google AI Blog、GitHub Trending 等来源抓取最新 AI 资讯，按来源/公司/人物做一级二级索引，生成包含标题、大致内容、技术价值、商用价值的每日技术报纸。触发场景：用户提到"每日报纸"、"技术侦察"、"tech scout"、"AI早报"、"AI晚报"、"技术早报"、"AI资讯汇总"、"今日AI新闻"、"获取最新AI资讯"、"每日AI动态"、"AI daily"、"tech daily"。
+---
+
+# Tech Scout Daily — AI 技术侦察每日报纸
+
+## 概述
+
+本 Skill 从多个权威 AI 信息源聚合每日最新资讯，生成结构化的技术侦察报纸。报纸包含一级索引（按来源）和二级索引（按公司/机构/人物），每篇资讯附带标题、大致内容、技术价值评分、商用价值评分。
+
+## 信息源
+
+| 编号 | 来源 | URL | 类型 |
+|------|------|-----|------|
+| 1 | HuggingFace Daily Papers | https://huggingface.co/api/daily_papers | 学术论文 |
+| 2 | HuggingFace Trending Papers | https://huggingface.co/papers/trending | 热门论文 |
+| 3 | LLM Stats News | https://llm-stats.com/ai-news | 模型/产业新闻 |
+| 4 | AI News (artificialintelligence-news.com) | https://www.artificialintelligence-news.com/ | 产业新闻 |
+| 5 | MIT AI News | https://news.mit.edu/topic/artificial-intelligence2 | 学术/研究 |
+| 6 | Google AI Blog | https://blog.google/technology/ai/ | 企业研究 |
+| 7 | GitHub Trending | https://github.com/trending | 开源项目 |
+
+### 网络与源可用性
+
+- `scripts/scraper.py` 的 Playwright 兜底是**可选**的：未安装 playwright 时只跳过失败源，不会再中断整次运行。
+  需要浏览器兜底（AI News 403、JS 渲染页面）时：
+  ```bash
+  pip install playwright && playwright install chromium
+  ```
+- 公司网络/代理环境下，`huggingface.co`、`blog.google` 可能因 DNS 污染不可达，`artificialintelligence-news.com` 可能返回 403。
+  实测可用的最小集合是 **3（LLM Stats）+ 5（MIT News）+ 7（GitHub Trending）**：
+  ```bash
+  python scripts/run.py --sources 3,5,7 --proxy "$HTTPS_PROXY"
+  ```
+- 抓取结果写入 `--output-dir`（默认 `/tmp`），不污染仓库。
+
+## 执行流程
+
+### 快捷模式：一键运行（中英双语）
+
+```bash
+python scripts/run.py
+```
+
+脚本会按顺序执行 **抓取 → 翻译 → 生成 → 打印**，输出中英双语日报到 `/tmp/tech_scout_daily_<date>.md`。
+
+**参数**：
+- `--output-dir`：输出目录（默认 `/tmp`）
+- `--format`：输出格式，`md` / `html` / `both`（默认 `md`）
+- `--insecure-ssl`：跳过 SSL 校验（用于受限网络环境）
+- `--proxy <url>`：HTTP 代理（如 `http://<host>:<port>`），用于解决 HuggingFace 等不可直连的源
+- `--ask-on-failure`：抓取后若仍有源失败，交互式询问是否提供代理 URL（推荐）
+- `--use-playwright`：用 Playwright 浏览器作为所有源的 fetcher（绕过 anti-bot）
+- `--playwright-only-failures`：先用 requests 抓取，失败的源再用 Playwright 重试（推荐）
+- `--no-translate`：跳过翻译步骤（仅英文）
+- `--no-print`：不打印报纸内容到 stdout（仅生成文件）
+
+> 推荐组合：`--playwright-only-failures --ask-on-failure --format both`
+
+### 失败时询问代理（推荐）
+
+加上 `--ask-on-failure` 后，若初次抓取 + Playwright 兜底后仍有源失败，脚本会交互式询问：
+
+```
+⚠️  以下源未获取: hf_daily, ai_news
+   1) 跳过失败的源，继续生成报纸
+   2) 提供 HTTP 代理 URL 重试（如 http://<host>:<port>）
+   3) 退出
+   请选择 [1/2/3]:
+```
+
+选 2 后会提示输入代理 URL，脚本会重新用代理抓取失败的源。非交互式环境（管道、opencode 调度）下自动选 1（跳过）。
+
+**为什么这样做**：避免在脚本里硬编码任何代理信息（隐私 + 安全），同时在网络失败时给用户一个补救机会。
+
+### HTML 输出特色
+
+生成的 HTML 自包含（CSS/JS 内联），可直接用浏览器打开，无需服务器：
+
+- 🌗 **主题切换**：深色 / 浅色模式切换（状态保存在 localStorage）
+- 🔍 **全文搜索**：实时搜索标题、摘要、公司、URL，自动高亮命中片段
+- 📑 **悬浮目录**：右侧 sticky TOC，一键跳转
+- 📦 **可折叠区块**：可折叠 <details> 节省纵向空间
+- 🖨️ **打印友好**：内置 `@media print` 样式
+- 📊 **统计卡片**：6 个 stat-card 直观展示今日指标
+- 🏢 **公司网格**：按公司索引用 grid 卡片展示
+- 🔖 **标签云**：frekuensi 加权标签
+
+直接打开：
+```bash
+open /tmp/tech_scout_daily_2026-07-30.html
+```
+
+### 手动模式：分步执行
+
+#### 第一步：使用 `scripts/scraper.py` 抓取数据
+
+```bash
+python scripts/scraper.py --output /tmp/tech_scout_raw.json
+```
+
+**参数说明**：
+- `--output`：输出 JSON 文件路径（默认 `/tmp/tech_scout_raw.json`）
+- `--days`：抓取最近几天的数据（默认 1）
+- `--sources`：逗号分隔的来源编号，如 `1,3,5`（默认全部）
+- `--proxy <url>`：HTTP 代理 URL（如 `http://<host>:<port>`）
+- `--use-playwright`：所有源都使用 Playwright（headless Chromium + 代理）
+- `--insecure-ssl`：跳过 SSL 校验
+
+**环境变量**：
+- `TECH_SCOUT_INSECURE_SSL=1`：等价于 `--insecure-ssl`
+
+**抓取策略**：
+1. 默认：requests 库快速抓取
+2. `--use-playwright`：所有源都用 Playwright（慢但能绕过反爬）
+3. **混合策略**（脚本内置）：requests 失败 → 自动 fallback 到 Playwright
+
+#### 第二步：使用 `scripts/translate.py` 翻译
+
+```bash
+python scripts/translate.py --input /tmp/tech_scout_raw.json --output /tmp/tech_scout_translated.json
+```
+
+**参数**：
+- `--input`：第一步输出的 JSON 文件
+- `--output`：翻译后的 JSON 文件
+- `--fields`：要翻译的字段，逗号分隔（默认 `title,summary`）
+
+#### 第三步：使用 `scripts/generate_daily.py` 生成报纸
+
+```bash
+# Markdown
+python scripts/generate_daily.py --input /tmp/tech_scout_translated.json --output /tmp/tech_scout_daily.md
+
+# HTML
+python scripts/generate_daily.py --input /tmp/tech_scout_translated.json --output /tmp/tech_scout_daily.html --format html
+
+# 两种格式同时（自动生成 .md + .html）
+python scripts/generate_daily.py --input /tmp/tech_scout_translated.json --output /tmp/tech_scout_daily --format both
+```
+
+**参数说明**：
+- `--input`：翻译后的 JSON 文件
+- `--output`：输出文件路径（`--format=both` 时扩展名自动）
+- `--format`：输出格式 `md` / `html` / `both`（默认 `md`）
+
+#### 第四步：将报纸展示给用户
+
+读取生成的 Markdown 文件，直接展示给用户。
+
+### 备选方案：当脚本不可用时
+
+如果 Python 脚本无法运行（如缺少依赖），按以下手动流程执行：
+
+1. **并行抓取所有来源**：使用 `webfetch` 或 `searxng_web_url_read` 工具同时抓取 7 个信息源
+2. **提取关键信息**：从每篇文章中提取标题、链接、摘要、日期、相关公司/人物
+3. **按报纸模板组织**：按照下方「报纸模板」的格式组织内容
+4. **为每篇文章评估**：技术价值（1-10）和商用价值（1-10）
+5. **生成一级二级索引**：按来源（一级）和公司/人物（二级）建立索引
+
+## 报纸模板
+
+```markdown
+# 🤖 AI Tech Scout Daily — YYYY-MM-DD
+
+> 生成时间：YYYY-MM-DD HH:MM UTC
+> 收录来源：HuggingFace Papers, LLM Stats, AI News, MIT News, Google AI Blog, GitHub Trending
+> 今日收录：N 篇
+
+---
+
+## 📊 今日概览
+
+| 指标 | 数值 |
+|------|------|
+| 总收录 | N 篇 |
+| 论文 | N 篇 |
+| 产业新闻 | N 篇 |
+| 开源项目 | N 个 |
+| 平均技术价值 | X.X / 10 |
+| 平均商用价值 | X.X / 10 |
+
+---
+
+## 📑 一级索引：按来源
+
+### 🔬 HuggingFace Daily Papers（N 篇）
+| # | 标题 | 技术价值 | 商用价值 |
+|---|------|---------|---------|
+| 1 | [标题] | 8/10 | 5/10 |
+
+### 📈 HuggingFace Trending Papers（N 篇）
+| # | 标题 | 技术价值 | 商用价值 |
+|---|------|---------|---------|
+
+### 🏭 LLM Stats News（N 篇）
+| # | 标题 | 技术价值 | 商用价值 |
+|---|------|---------|---------|
+
+### 📰 AI News（N 篇）
+| # | 标题 | 技术价值 | 商用价值 |
+|---|------|---------|---------|
+
+### 🎓 MIT AI News（N 篇）
+| # | 标题 | 技术价值 | 商用价值 |
+|---|------|---------|---------|
+
+### 🔬 Google AI Blog（N 篇）
+| # | 标题 | 技术价值 | 商用价值 |
+|---|------|---------|---------|
+
+### 💻 GitHub Trending（N 个）
+| # | 项目 | Stars | 技术价值 | 商用价值 |
+|---|------|-------|---------|---------|
+
+---
+
+## 📇 二级索引：按公司/机构
+
+### OpenAI
+| 标题 | 来源 | 技术价值 | 商用价值 |
+|------|------|---------|---------|
+
+### Google / DeepMind
+| 标题 | 来源 | 技术价值 | 商用价值 |
+|------|------|---------|---------|
+
+### Meta
+| 标题 | 来源 | 技术价值 | 商用价值 |
+|------|------|---------|---------|
+
+### Anthropic
+| 标题 | 来源 | 技术价值 | 商用价值 |
+|------|------|---------|---------|
+
+### Microsoft
+| 标题 | 来源 | 技术价值 | 商用价值 |
+|------|------|---------|---------|
+
+### MIT
+| 标题 | 来源 | 技术价值 | 商用价值 |
+|------|------|---------|---------|
+
+### 其他机构
+| 标题 | 来源 | 技术价值 | 商用价值 |
+|------|------|---------|---------|
+
+---
+
+## 📇 二级索引：按人物
+
+（按姓名首字母排序）
+
+| 人物 | 所属机构 | 标题 | 来源 |
+|------|---------|------|------|
+
+---
+
+## 🔥 头条深度
+
+### 今日头条：[标题]
+
+**来源**：[来源名称]
+**链接**：[URL]
+
+**大致内容**：
+[2-3 段内容摘要]
+
+**技术价值**：X/10
+[技术价值分析：创新性、方法论、可复现性、技术难度]
+
+**商用价值**：X/10
+[商用价值分析：市场规模、应用场景、时间窗口、竞争格局]
+
+---
+
+### 次条：[标题]
+
+（同上格式）
+
+---
+
+## 🔖 标签云
+
+`#LLM` `#Agent` `#OpenSource` `#Multimodal` `#Robotics` `#Healthcare` ...
+
+---
+
+## 📝 评分说明
+
+| 技术价值 | 评分标准 |
+|---------|---------|
+| 9-10 | 突破性创新，改变领域范式 |
+| 7-8 | 显著创新，有重要技术贡献 |
+| 5-6 | 有一定创新，改进现有方法 |
+| 3-4 | 增量改进，工程优化 |
+| 1-2 | 无明显技术创新 |
+
+| 商用价值 | 评分标准 |
+|---------|---------|
+| 9-10 | 百亿级市场，近期可商业化 |
+| 7-8 | 十亿级市场，1-2年内可商业化 |
+| 5-6 | 明确商业场景，需要进一步验证 |
+| 3-4 | 远期商业潜力，5年以上 |
+| 1-2 | 纯学术研究，商业前景不明 |
+```
+
+## 技术价值 & 商用价值 评估指南
+
+为每篇文章/论文评估时，从以下维度考虑：
+
+### 技术价值评估维度
+- **创新性**：方法是全新的还是对现有工作的改进？
+- **方法论**：技术方案是否严谨、可复现？
+- **影响力**：对所在领域的影响力有多大？
+- **通用性**：技术是否可以迁移到其他领域？
+
+### 商用价值评估维度
+- **市场规模**：潜在市场规模有多大？
+- **应用场景**：是否有清晰的落地场景？
+- **时间窗口**：距离商业化还有多远？
+- **竞争格局**：该领域竞争激烈程度如何？
+
+## 注意事项
+
+1. **时效性优先**：优先收录当日/近24小时的内容
+2. **去重**：同一内容出现在多个来源时，合并为一条，标注多个来源
+3. **质量筛选**：跳过纯广告/软文，仅收录有实质内容的信息
+4. **中英双语**：报纸默认输出中英双语（"大致内容 / Summary"），如不需翻译可加 `--no-translate`
+5. **来源标注**：每条信息必须标注来源和链接
+6. **容错**：某个来源抓取失败时，跳过该来源，在报告中标注"未获取"
+7. **网络问题 / 代理支持**：
+   - **HuggingFace.co** 在受限网络直连经常 SSL EOF，**必须用代理**：加 `--ask-on-failure` 让脚本询问，或直接传 `--proxy http://<host>:<port>`
+   - **artificialintelligence-news.com** 在 WAF/Cloudflare 后面，部分地区 403。脚本会自动 fallback 到 Playwright。若仍失败则跳过
+   - **Google AI Blog** 在国内可能 SSL EOF，建议用代理
+   - **混合策略**：脚本默认先 requests，失败后自动用 Playwright 重试（带代理）
+8. **评分说明**：自动评分仅基于关键词匹配，仅为参考。人工/模型对每条资讯的细化分析（如技术路线、商业模式）应另行补充
+
+## 依赖安装
+
+```bash
+pip install -r scripts/requirements.txt
+
+# Playwright 还需要下载浏览器内核
+python -m playwright install chromium
+```
+
+如果使用代理且在内核受限环境，可以只安装 requests + beautifulsoup4：
+
+```bash
+pip install requests beautifulsoup4 deep-translator
+```
+
+## 常见问题
+
+**Q: HuggingFace 抓不到？**
+A: 加 `--ask-on-failure`，脚本会询问是否提供代理 URL。直接传：`--proxy http://<host>:<port>` 或环境变量 `HTTPS_PROXY=http://<host>:<port>`
+
+**Q: AI News 一直 403？**
+A: 该站用 Cloudflare/WAF 限制部分地区 IP，无法绕开。脚本会自动跳过并在报告中标注"未获取"。
+
+**Q: 翻译失败 / 很慢？**
+A: `deep-translator` 调用 Google Translate 免费接口。如被限速，加 `--no-translate` 跳过；或配置 `TECH_SCOUT_INSECURE_SSL=1`。
+
+**Q: 我想换翻译源（不用 Google）？**
+A: 修改 `scripts/translate.py` 中的 GoogleTranslator 为其他 backend（`deep-translator` 支持 DeepL、Microsoft、Baidu 等）。

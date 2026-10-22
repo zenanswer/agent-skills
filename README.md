@@ -9,6 +9,8 @@
 | [`create-icon`](skills/create-icon/) | 用可配置的文生图模型（MiniMax / 通义千问 / OpenAI / 兼容网关）生成 PPT 图标，支持预设风格、按示例图学风格、批量出图、透明背景 | `uv` + 一个图片模型 API Key |
 | [`icon-finder`](skills/icon-finder/) | 搜索并下载品牌 / 技术 Logo（Iconify + Simple Icons），同时输出 SVG 与透明 PNG，可直接插进 PPT | `requests`、`cairosvg`、`Pillow`，系统 `cairo` |
 | [`skill-manager`](skills/skill-manager/) | 盘点本机已安装的 skills（来源 / 版本 / 路径 / 功能），按需检查上游有无更新，并指导用官方安装器查找、安装、更新、排障 | 仅 `python3` 标准库 + `npx` |
+| [`it-product-research`](skills/it-product-research/) | IT 产品竞品调研与横向对比：需求澄清 → 动态维度 → 加权评分 → 中英双语报告 | 纯 prompt，无脚本 |
+| [`tech-scout-daily`](skills/tech-scout-daily/) | AI 技术侦察日报：抓取多源资讯，按来源/公司/人物索引，附技术价值与商用价值评分 | `requests`、`beautifulsoup4`、`deep-translator`（playwright 可选） |
 | [`image-inspector`](skills/image-inspector/) | 外部视觉模型做问答 / OCR / JSON 抽取 / 批量 / 长图切块，以及 Qwen3-VL 的 2D・3D grounding（框、点、三维框） | `uv` + 一个多模态模型 API |
 
 ## 安装
@@ -17,6 +19,7 @@
 # 全部安装（全局，Claude Code + OpenCode）
 npx -y skills@latest add zenanswer/agent-skills -g \
   -s create-icon icon-finder skill-manager image-inspector \
+  it-product-research tech-scout-daily \
   -a claude-code opencode -y
 
 # 只装其中一个
@@ -84,7 +87,9 @@ skills/
 ├── create-icon/     SKILL.md + 4 个 Python 脚本 + styles.json
 ├── icon-finder/      SKILL.md + scripts/（搜索 / 下载 / 渲染）
 ├── skill-manager/    SKILL.md + scripts/skillmgr.py + references/
-└── image-inspector/  SKILL.md + scripts/vision.py + scripts/server.py + references/
+├── image-inspector/  SKILL.md + scripts/vision.py + scripts/server.py + references/
+├── it-product-research/  SKILL.md
+└── tech-scout-daily/     SKILL.md + scripts/（抓取 / 翻译 / 生成）
 ```
 
 ## License
